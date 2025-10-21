@@ -1,0 +1,8 @@
+torch
+scikit-learn
+pandas
+numpy
+geoip2
+flask
+joblib
+user-agents
