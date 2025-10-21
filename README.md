@@ -1,4 +1,4 @@
-## Shibboleth Threat Detection
+# Shibboleth Threat Detection
 
 A Flask webserver that uses a neural network to classify logins based on their risk level. This is the backend that takes data from Shibboleth IdP and will return the score.
 
