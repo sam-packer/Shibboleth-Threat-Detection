@@ -6,3 +6,4 @@ geoip2
 flask
 joblib
 user-agents
+matplotlib
