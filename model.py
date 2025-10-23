@@ -3,7 +3,7 @@ import torch.nn as nn
 
 
 class RBAModel(nn.Module):
-    def __init__(self, vocab_sizes, embedding_dims, num_numerical_feats, hidden_dim=128, dropout_rate=0.4):
+    def __init__(self, vocab_sizes, embedding_dims, num_numerical_feats, hidden_dim=128, dropout_rate=0.5):
         """
         Initializes a flexible model that can handle any number of categorical and numerical features.
 
@@ -39,7 +39,6 @@ class RBAModel(nn.Module):
 
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout_rate)
-        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x_categorical, x_numerical):
         """
@@ -70,6 +69,4 @@ class RBAModel(nn.Module):
         x = self.dropout(x)
 
         x = self.fc3(x)
-        x = self.sigmoid(x)
         return x
-
