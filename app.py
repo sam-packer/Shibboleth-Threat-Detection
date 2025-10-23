@@ -53,8 +53,6 @@ def download_and_extract_maxmind_db(edition_id, license_key, dest_path):
                     return False
 
                 # Extract the .mmdb file to our destination path
-                # OLD: with db_member as source, open(dest_path, "wb") as dest:
-                # FIX: Use tar.extractfile(db_member) which returns a file-like object
                 with tar.extractfile(db_member) as source, open(dest_path, "wb") as dest:
                     dest.write(source.read())
 
@@ -125,7 +123,8 @@ try:
         'username': 50, 'Country': 20, 'City': 30,
         'OS': 20, 'Browser': 20, 'DeviceType': 10, 'ASN': 25
     }
-    model = RBAModel(vocab_sizes, embedding_dims, num_numerical_feats=len(scaler.mean_))
+    num_numerical_feats = len(scaler.mean_) if hasattr(scaler, 'mean_') else scaler.n_features_in_
+    model = RBAModel(vocab_sizes, embedding_dims, num_numerical_feats=num_numerical_feats)
 
     # Load the trained weights
     model.load_state_dict(torch.load('rba_model.pth'))
@@ -233,15 +232,18 @@ def get_threat_score():
         X_num = torch.FloatTensor(num_data_scaled)
 
         # 3. Get prediction from the model
-        with torch.no_grad():  # Disable gradient calculation for inference
-            threat_score = model(X_cat, X_num).item()
+        with torch.no_grad():
+            logits = model(X_cat, X_num)
+            probability = torch.sigmoid(logits)
+            threat_score = probability.item()
 
         # 4. Make decision based on the learned threshold
-        decision_threshold = 0.5  # This could also be loaded from a config
+        decision_threshold = 0.5
         decision = 'allow' if threat_score < decision_threshold else 'reject'
 
         print(f"  > Features extracted: CAT={cat_features}, NUM={num_features}")
-        print(f"  > Model prediction for '{data.get('username')}': Score={threat_score:.4f}, Decision='{decision}'")
+        print(
+            f"  > Model prediction for '{data.get('username')}': Logit={logits.item():.4f}, Score={threat_score:.4f}, Decision='{decision}'")
 
         return jsonify({
             'threatScore': threat_score,
@@ -266,4 +268,3 @@ if __name__ == '__main__':
         app.run(host='127.0.0.1', port=port, debug=debug_mode)
     else:
         print("Flask server not started because model failed to load.")
-
