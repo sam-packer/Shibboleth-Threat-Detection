@@ -1,3 +1,4 @@
+requests
 torch
 scikit-learn
 pandas
@@ -6,3 +7,4 @@ geoip2
 flask
 joblib
 user-agents
+python-dotenv

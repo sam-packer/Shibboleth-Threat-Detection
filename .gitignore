@@ -3,4 +3,5 @@ __pycache__
 *.pth
 *.zip
 *.json
-GeoLite2-City.mmdb
+*.mmdb
+.env
