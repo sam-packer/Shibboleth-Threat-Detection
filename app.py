@@ -248,7 +248,6 @@ def get_threat_score():
         return jsonify({
             'threatScore': threat_score,
             'decision': decision,
-            'transactionId': data.get('transactionId')
         })
 
     except KeyError as e:
