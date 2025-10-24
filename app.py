@@ -238,7 +238,7 @@ def get_threat_score():
             threat_score = probability.item()
 
         # 4. Make decision based on the learned threshold
-        decision_threshold = 0.5
+        decision_threshold = 0.7
         decision = 'allow' if threat_score < decision_threshold else 'reject'
 
         print(f"  > Features extracted: CAT={cat_features}, NUM={num_features}")
