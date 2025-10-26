@@ -9,3 +9,4 @@ joblib
 user-agents
 python-dotenv
 matplotlib
+sqlalchemy
