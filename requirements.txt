@@ -10,3 +10,4 @@ user-agents
 python-dotenv
 matplotlib
 sqlalchemy
+psycopg2-binary
