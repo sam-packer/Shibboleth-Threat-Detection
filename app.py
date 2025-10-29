@@ -57,8 +57,9 @@ def score_endpoint():
 
         username = body.get("username", "unknown_user")
         client_ip = body.get("ipAddress") or request.remote_addr
-        device_uuid = body.get("deviceUUID")
+
         metrics = body.get("metrics", {})
+        device_uuid = metrics.get("device_uuid")
 
         if not metrics or not isinstance(metrics, dict):
             return jsonify({"error": "Invalid JSON"}), 400
