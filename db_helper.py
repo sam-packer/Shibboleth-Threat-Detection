@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime, timezone
-from typing import Union, Dict, Any
+from typing import Union, Dict, Any, Optional
 
 load_dotenv()
 POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
@@ -24,7 +24,7 @@ ALLOWED_JSON_COLUMNS = {
     "resize_events", "tz_offset_min", "language", "platform",
     "device_memory_gb", "hardware_concurrency", "screen_width_px",
     "screen_height_px", "pixel_ratio", "color_depth", "touch_support",
-    "webauthn_supported", "city", "country", "asn",
+    "webauthn_supported", "city", "country", "asn"
 }
 
 
@@ -32,8 +32,9 @@ def insert_login_event_from_json(
         data: Union[str, Dict[str, Any]],
         username: str,
         ip_address: str = None,
-        device_uuid: str = None
-) -> int | None:
+        device_uuid: str = None,
+        extra_fields: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
     try:
         if isinstance(data, str):
             data = json.loads(data)
@@ -52,17 +53,16 @@ def insert_login_event_from_json(
         "event_timestamp": datetime.now(timezone.utc),
     }
 
-    # Securely filter the dynamic JSON data against the whitelist
-    safe_data = {
-        key: value
-        for key, value in data.items()
-        if key in ALLOWED_JSON_COLUMNS
-    }
+    # Only keep whitelisted dynamic columns from client/enrichment
+    behavioral_data = {k: v for k, v in data.items() if k in ALLOWED_JSON_COLUMNS}
 
-    # Merge static fields and safe dynamic fields
-    params = {**base_fields, **safe_data}
+    # Only keep whitelisted dynamic columns from server-side extras (scores, flags, etc.)
+    nn_scores = {k: v for k, v in (extra_fields or {}).items() if k in ALLOWED_JSON_COLUMNS}
 
-    # Filter out any None values to allow database defaults (e.g., if ip_address is None)
+    # Merge: static -> client/enrichment -> server extras (extras can override client if needed)
+    params = {**base_fields, **behavioral_data, **nn_scores}
+
+    # Strip Nones so DB defaults can apply
     params = {k: v for k, v in params.items() if v is not None}
 
     # Build the SQL statement

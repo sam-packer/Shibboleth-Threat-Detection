@@ -70,16 +70,19 @@ def score_endpoint():
         enriched["username"] = username
         enriched["device_uuid"] = device_uuid
 
-        # Insert into DB
-        login_id = insert_login_event_from_json(enriched, username=username, ip_address=client_ip,
-                                                device_uuid=device_uuid)
-        if not login_id:
-            return jsonify({"error": "Failed to record login event"}), 500
-
         # Placeholder scores
         heuristic_score = 0.5
         nn_score = -1
         ensemble_score = 0.5
+
+        # Insert into DB
+        login_id = insert_login_event_from_json(enriched, username=username, ip_address=client_ip,
+                                                device_uuid=device_uuid,
+                                                extra_fields={"heuristic_score": heuristic_score, "nn_score": nn_score,
+                                                              "ensemble_score": ensemble_score,
+                                                              })
+        if not login_id:
+            return jsonify({"error": "Failed to record login event"}), 500
 
         # You know, if we get an R2 lower than 0.5, this would be more effective
         threat_score = random.random()
