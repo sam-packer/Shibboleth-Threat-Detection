@@ -87,7 +87,7 @@ def score_endpoint():
         # You know, if we get an R2 lower than 0.5, this would be more effective
         threat_score = random.random()
 
-        return jsonify({"threatScore": 0.9})
+        return jsonify({"threatScore": threat_score})
 
     except Exception as e:
         logging.error(f"[API] /score failed: {e}", exc_info=True)
