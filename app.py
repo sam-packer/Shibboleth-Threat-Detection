@@ -71,7 +71,7 @@ def score_endpoint():
         enriched["device_uuid"] = device_uuid
 
         # Placeholder scores
-        heuristic_score = 0.9
+        heuristic_score = 0.0
         nn_score = -1
         ensemble_score = -1
 
@@ -87,7 +87,7 @@ def score_endpoint():
         # You know, if we get an R2 lower than 0.5, this would be more effective
         threat_score = random.random()
 
-        return jsonify({"threatScore": round(threat_score, 4)})
+        return jsonify({"threatScore": 0.9)
 
     except Exception as e:
         logging.error(f"[API] /score failed: {e}", exc_info=True)
