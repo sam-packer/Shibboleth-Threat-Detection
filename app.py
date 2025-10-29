@@ -53,24 +53,25 @@ def enrich_with_geoip(data: dict, client_ip: str) -> dict:
 @app.route("/score", methods=["POST"])
 def score_endpoint():
     try:
-        req_data = request.get_json(force=True)
-        username = request.args.get("username") or "unknown_user"
-        device_uuid = request.args.get("device_uuid")
-        client_ip = request.remote_addr
+        body = request.get_json(force=True)
 
-        if not req_data or not isinstance(req_data, dict):
+        username = body.get("username", "unknown_user")
+        client_ip = body.get("ipAddress") or request.remote_addr
+        device_uuid = body.get("deviceUUID")
+        metrics = body.get("metrics", {})
+
+        if not metrics or not isinstance(metrics, dict):
             return jsonify({"error": "Invalid JSON"}), 400
 
         # Enrich with GeoIP
-        enriched = enrich_with_geoip(req_data, client_ip)
-
-        # Add required fields
+        enriched = enrich_with_geoip(metrics, client_ip)
         enriched["ip_address"] = client_ip
         enriched["username"] = username
         enriched["device_uuid"] = device_uuid
 
         # Insert into DB
-        login_id = insert_login_event_from_json(enriched, username=username, ip_address=client_ip, device_uuid=device_uuid)
+        login_id = insert_login_event_from_json(enriched, username=username, ip_address=client_ip,
+                                                device_uuid=device_uuid)
         if not login_id:
             return jsonify({"error": "Failed to record login event"}), 500
 
