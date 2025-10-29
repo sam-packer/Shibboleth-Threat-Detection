@@ -71,9 +71,9 @@ def score_endpoint():
         enriched["device_uuid"] = device_uuid
 
         # Placeholder scores
-        heuristic_score = 0.5
+        heuristic_score = 0.9
         nn_score = -1
-        ensemble_score = 0.5
+        ensemble_score = -1
 
         # Insert into DB
         login_id = insert_login_event_from_json(enriched, username=username, ip_address=client_ip,
