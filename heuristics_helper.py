@@ -48,6 +48,48 @@ def fetch_baseline_sample(limit: int = 20000) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def estimate_user_sample_power(conn, max_margin: float = 0.10) -> pd.DataFrame:
+    """
+    Estimate how many logins each user has and whether they have enough
+    behavioral data for reliable heuristic scoring.
+    Uses click_count variance as a proxy for behavioral stability.
+
+    Args:
+        conn: active SQLAlchemy connection
+        max_margin: allowable relative margin of error for the mean (10% default)
+    """
+    df = pd.read_sql(text("""
+        SELECT username,
+               COUNT(*) AS n,
+               AVG(click_count) AS mean_clicks,
+               STDDEV(click_count) AS std_clicks
+        FROM rba_login_event
+        WHERE nn_score = -1.0
+        GROUP BY username
+    """), conn)
+
+    if df.empty:
+        logging.warning("[Heuristics] No user data found for sample adequacy check.")
+        return df
+
+    # Handle division safely
+    df["std_clicks"].fillna(0.0, inplace=True)
+    df["mean_clicks"].replace(0.0, np.nan, inplace=True)
+
+    # 95% confidence interval width
+    df["margin_of_error"] = 1.96 * (df["std_clicks"] / np.sqrt(df["n"].clip(lower=1)))
+    df["rel_margin"] = df["margin_of_error"] / df["mean_clicks"]
+    df["sufficient_data"] = df["rel_margin"] < max_margin
+    df.loc[df["n"] < 50, "sufficient_data"] = False
+    df.loc[df["std_clicks"] == 0, "sufficient_data"] = False
+
+    qualified = df["sufficient_data"].sum()
+    total = len(df)
+    logging.info(f"[Heuristics] {qualified}/{total} users have stable data "
+                 f"(relative margin < {max_margin:.0%}).")
+    return df
+
+
 def compute_feature_statistics(df: pd.DataFrame) -> dict:
     """
     Compute robust statistics for each feature: mean, std, percentiles.
@@ -98,6 +140,9 @@ def compute_dynamic_heuristic(row: dict, stats: dict) -> float:
 
 
 def preview_heuristics(sample_limit: int = 2000):
+    """
+    Preview heuristic distributions and user sample stability before committing updates.
+    """
     df = fetch_baseline_sample(sample_limit)
     if df.empty:
         print("No data available.")
@@ -106,15 +151,43 @@ def preview_heuristics(sample_limit: int = 2000):
     stats = compute_feature_statistics(df)
     df["heuristic_score"] = df.apply(lambda row: compute_dynamic_heuristic(row, stats), axis=1)
 
+    # --- Heuristic summary ---
     print(df[["key_count", "click_count", "idle_time_total_ms", "heuristic_score"]].head(10))
     print("\nHeuristic summary:")
     print(df["heuristic_score"].describe())
 
+    # --- Per-user sample adequacy ---
+    try:
+        with engine.connect() as conn:
+            power_df = estimate_user_sample_power(conn)
+            if power_df.empty:
+                print("\nNo user sample data found.")
+                return
+
+        print("\nUser sample adequacy (first 10):")
+        print(
+            power_df[["username", "n", "mean_clicks", "rel_margin", "sufficient_data"]]
+            .sort_values("n", ascending=False)
+            .head(10)
+            .to_string(index=False, float_format=lambda x: f"{x:.3f}")
+        )
+
+        qualified = power_df["sufficient_data"].sum()
+        total = len(power_df)
+        print(f"\n{qualified}/{total} users have stable data (relative margin < 10%).")
+
+        # Optional: give a basic histogram of user sample sizes
+        print("\nLogin count distribution per user:")
+        print(power_df["n"].describe())
+
+    except SQLAlchemyError as e:
+        logging.error(f"[Heuristics] Sample adequacy preview failed: {e}")
+
 
 def retroactively_backfill_heuristics(batch_size: int = 5000):
     """
-    Compute heuristic scores for logins without a neural net score (nn_score=0.0)
-    and update them in the DB.
+    Compute heuristic scores for logins without a neural net score (nn_score=-1.0),
+    but only for users whose behavioral data is statistically stable.
     """
     baseline = fetch_baseline_sample(batch_size * 2)
     if baseline.empty:
@@ -124,6 +197,15 @@ def retroactively_backfill_heuristics(batch_size: int = 5000):
     stats = compute_feature_statistics(baseline)
 
     try:
+        with engine.connect() as conn:
+            power_df = estimate_user_sample_power(conn)
+            if power_df.empty:
+                logging.warning("[Heuristics] Skipping update, no users qualified.")
+                return
+
+            stable_users = set(power_df.query("sufficient_data")["username"])
+            logging.info(f"[Heuristics] {len(stable_users)} users qualified for scoring.")
+
         with engine.begin() as conn:
             result = conn.execute(text(f"""
                 SELECT login_id, username, {', '.join(FEATURE_COLUMNS)}
@@ -131,23 +213,28 @@ def retroactively_backfill_heuristics(batch_size: int = 5000):
                 WHERE nn_score = -1.0
             """))
             rows = result.mappings().all()
-            logging.info(f"Fetched {len(rows)} rows to backfill.")
+            logging.info(f"Fetched {len(rows)} candidate rows for backfill.")
 
             updated = 0
+            skipped = 0
             for row in rows:
+                if row["username"] not in stable_users:
+                    skipped += 1
+                    continue
+
                 score = compute_dynamic_heuristic(row, stats)
                 conn.execute(
                     text("""
-                         UPDATE rba_login_event
-                         SET nn_score = :score
-                         WHERE login_id = :id
-                           AND username = :username
-                         """),
+                        UPDATE rba_login_event
+                        SET nn_score = :score
+                        WHERE login_id = :id AND username = :username
+                    """),
                     {"score": score, "id": row["login_id"], "username": row["username"]}
                 )
                 updated += 1
 
-            logging.info(f"Updated {updated} rows with data-driven heuristic scores.")
+            logging.info(f"[Heuristics] Updated {updated} rows. "
+                         f"Skipped {skipped} rows due to insufficient data.")
 
     except SQLAlchemyError as e:
         logging.error(f"[Heuristics] Backfill failed: {e}")
