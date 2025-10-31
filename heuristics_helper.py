@@ -25,7 +25,6 @@ FEATURE_COLUMNS = [
 ]
 
 
-# --- Data Loading -------------------------------------------------------------
 def fetch_baseline_sample(limit: int = 20000) -> pd.DataFrame:
     """
     Fetches a random sample of login events to derive feature distributions.
@@ -34,7 +33,7 @@ def fetch_baseline_sample(limit: int = 20000) -> pd.DataFrame:
     query = text(f"""
         SELECT {', '.join(FEATURE_COLUMNS)}
         FROM rba_login_event
-        WHERE nn_score = 0.0
+        WHERE nn_score = -1.0
         ORDER BY random()
         LIMIT :limit
     """)
@@ -49,7 +48,6 @@ def fetch_baseline_sample(limit: int = 20000) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-# --- Feature Scaling ----------------------------------------------------------
 def compute_feature_statistics(df: pd.DataFrame) -> dict:
     """
     Compute robust statistics for each feature: mean, std, percentiles.
@@ -72,7 +70,6 @@ def compute_feature_statistics(df: pd.DataFrame) -> dict:
     return stats
 
 
-# --- Heuristic Computation ----------------------------------------------------
 def compute_dynamic_heuristic(row: dict, stats: dict) -> float:
     """
     Compute a dynamic heuristic score based on normalized z-scores and deviations.
@@ -100,7 +97,6 @@ def compute_dynamic_heuristic(row: dict, stats: dict) -> float:
     return float(np.clip(risk, 0.0, 1.0))
 
 
-# --- Preview Mode -------------------------------------------------------------
 def preview_heuristics(sample_limit: int = 2000):
     df = fetch_baseline_sample(sample_limit)
     if df.empty:
@@ -115,7 +111,6 @@ def preview_heuristics(sample_limit: int = 2000):
     print(df["heuristic_score"].describe())
 
 
-# --- Retroactive Backfill -----------------------------------------------------
 def retroactively_backfill_heuristics(batch_size: int = 5000):
     """
     Compute heuristic scores for logins without a neural net score (nn_score=0.0)
@@ -133,7 +128,7 @@ def retroactively_backfill_heuristics(batch_size: int = 5000):
             result = conn.execute(text(f"""
                 SELECT login_id, username, {', '.join(FEATURE_COLUMNS)}
                 FROM rba_login_event
-                WHERE nn_score = 0.0
+                WHERE nn_score = -1.0
             """))
             rows = result.mappings().all()
             logging.info(f"Fetched {len(rows)} rows to backfill.")
@@ -143,10 +138,11 @@ def retroactively_backfill_heuristics(batch_size: int = 5000):
                 score = compute_dynamic_heuristic(row, stats)
                 conn.execute(
                     text("""
-                        UPDATE rba_login_event
-                        SET nn_score = :score
-                        WHERE login_id = :id AND username = :username
-                    """),
+                         UPDATE rba_login_event
+                         SET nn_score = :score
+                         WHERE login_id = :id
+                           AND username = :username
+                         """),
                     {"score": score, "id": row["login_id"], "username": row["username"]}
                 )
                 updated += 1
@@ -157,16 +153,46 @@ def retroactively_backfill_heuristics(batch_size: int = 5000):
         logging.error(f"[Heuristics] Backfill failed: {e}")
 
 
-# --- CLI Entrypoint -----------------------------------------------------------
 if __name__ == "__main__":
     import argparse
+    import sys
 
-    parser = argparse.ArgumentParser(description="Heuristic backfill for RBA.")
-    parser.add_argument("--preview", action="store_true", help="Preview heuristic stats only.")
-    parser.add_argument("--batch", type=int, default=5000, help="Batch size for DB update.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Heuristic backfill tool for Risk-Based Authentication (RBA). "
+            "It calculates heuristic scores only for logins where nn_score = -1.0 "
+            "(typically collected in passthrough mode). Existing scores will not be modified."
+        )
+    )
+
+    parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="Preview heuristic statistics and sample scores (no database writes)."
+    )
+    parser.add_argument(
+        "--batch",
+        type=int,
+        default=5000,
+        help="Number of rows to sample or update per batch (default: 5000)."
+    )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="!!! IRREVERSIBLE, backup recommended !!! Apply heuristic scores to the database."
+    )
+
     args = parser.parse_args()
+
+    # If no args provided, show help and exit
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(0)
 
     if args.preview:
         preview_heuristics(sample_limit=args.batch)
-    else:
+    elif args.write:
         retroactively_backfill_heuristics(batch_size=args.batch)
+    else:
+        print("No action specified. Use --preview or --write.\n")
+        parser.print_help()
