@@ -15,8 +15,7 @@ if not POSTGRES_CONNECTION_STRING:
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
 
 ALLOWED_JSON_COLUMNS = {
-    "metrics_version", "heuristic_score", "nn_score", "ensemble_score",
-    "impossible_travel", "human_verified", "focus_changes", "blur_events",
+    "metrics_version", "nn_score", "human_verified", "focus_changes", "blur_events",
     "click_count", "key_count", "avg_key_delay_ms", "pointer_distance_px",
     "pointer_event_count", "scroll_distance_px", "scroll_event_count",
     "dom_ready_ms", "time_to_first_key_ms", "time_to_first_click_ms",
@@ -35,6 +34,7 @@ def insert_login_event_from_json(
         device_uuid: str = None,
         extra_fields: Optional[Dict[str, Any]] = None,
 ) -> Optional[int]:
+    """Insert raw login event data and return login_id."""
     try:
         if isinstance(data, str):
             data = json.loads(data)
@@ -45,7 +45,6 @@ def insert_login_event_from_json(
         logging.warning(f"[DB] JSON decode error: {e}")
         return None
 
-    # Define static fields provided by the application
     base_fields = {
         "username": username,
         "device_uuid": device_uuid,
@@ -53,19 +52,12 @@ def insert_login_event_from_json(
         "event_timestamp": datetime.now(timezone.utc),
     }
 
-    # Only keep whitelisted dynamic columns from client/enrichment
     behavioral_data = {k: v for k, v in data.items() if k in ALLOWED_JSON_COLUMNS}
-
-    # Only keep whitelisted dynamic columns from server-side extras (scores, flags, etc.)
     nn_scores = {k: v for k, v in (extra_fields or {}).items() if k in ALLOWED_JSON_COLUMNS}
 
-    # Merge: static -> client/enrichment -> server extras (extras can override client if needed)
     params = {**base_fields, **behavioral_data, **nn_scores}
-
-    # Strip Nones so DB defaults can apply
     params = {k: v for k, v in params.items() if v is not None}
 
-    # Build the SQL statement
     columns = ", ".join(params.keys())
     values = ", ".join([f":{k}" for k in params.keys()])
 
@@ -82,6 +74,81 @@ def insert_login_event_from_json(
     except Exception as e:
         logging.error(f"[DB] Unexpected error: {e}", exc_info=True)
         return None
+
+
+def insert_rba_scores(
+        login_id: int,
+        username: str,
+        nn_score: float,
+        ip_risk_score: float,
+        impossible_travel: float,
+        final_score: Optional[float] = None,
+) -> bool:
+    """Insert derived risk scores into rba_scores table."""
+    if login_id is None:
+        logging.error("[DB] insert_rba_scores called with null login_id")
+        return False
+
+    final_score = final_score if final_score is not None else nn_score
+
+    sql = text("""
+        INSERT INTO rba_scores (login_id, username, nn_score, ip_risk_score, impossible_travel, final_score, created_at)
+        VALUES (:login_id, :username, :nn_score, :ip_risk_score, :impossible_travel, :final_score, :created_at)
+    """)
+
+    params = {
+        "login_id": login_id,
+        "username": username,
+        "nn_score": nn_score,
+        "ip_risk_score": ip_risk_score,
+        "impossible_travel": impossible_travel,
+        "final_score": final_score,
+        "created_at": datetime.now(timezone.utc),
+    }
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(sql, params)
+        return True
+    except SQLAlchemyError as e:
+        logging.error(f"[DB] Error inserting into rba_scores: {e}", exc_info=True)
+        return False
+
+
+def record_login_with_scores(
+        data: Union[str, Dict[str, Any]],
+        username: str,
+        ip_address: str,
+        device_uuid: str,
+        nn_score: float,
+        ip_risk_score: float,
+        impossible_travel: float,
+        final_score: Optional[float] = None,
+) -> Optional[int]:
+    """
+    Insert both login event and associated risk scores in one go.
+    Returns login_id or None on failure.
+    """
+    login_id = insert_login_event_from_json(
+        data,
+        username=username,
+        ip_address=ip_address,
+        device_uuid=device_uuid,
+        extra_fields={"nn_score": nn_score}
+    )
+    if not login_id:
+        return None
+
+    insert_rba_scores(
+        login_id=login_id,
+        username=username,
+        nn_score=nn_score,
+        ip_risk_score=ip_risk_score,
+        impossible_travel=impossible_travel,
+        final_score=final_score
+    )
+
+    return login_id
 
 
 def db_health_check() -> bool:

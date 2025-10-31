@@ -4,15 +4,14 @@ import random
 
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-from geoip2.database import Reader
-from geoip_helper import ensure_geoip_up_to_date, get_geoip_paths
+from geoip_helper import ensure_geoip_up_to_date, enrich_with_geoip
 from stopforumspam_helper import ensure_sfs_up_to_date
-from db_helper import insert_login_event_from_json, db_health_check
-from ipaddress import ip_address as ip_parse
+from db_helper import db_health_check, record_login_with_scores
 
-# --- Init & config ---
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
+
+PASSTHROUGH_MODE = os.getenv("PASSTHROUGH_MODE", "true").lower() == "true"
 
 app = Flask(__name__)
 
@@ -22,32 +21,6 @@ def preflight():
     ensure_sfs_up_to_date()
     db_health_check()
     return True
-
-
-def enrich_with_geoip(data: dict, client_ip: str) -> dict:
-    paths = get_geoip_paths()
-
-    try:
-        ip_obj = ip_parse(client_ip)
-    except ValueError:
-        logging.warning(f"[GeoIP] Invalid IP address: {client_ip}")
-        return data
-
-    try:
-        with Reader(paths["city"]) as city_reader, Reader(paths["asn"]) as asn_reader:
-            city_info = city_reader.city(client_ip)
-            asn_info = asn_reader.asn(client_ip)
-
-            data["country"] = city_info.country.iso_code or None
-            data["city"] = city_info.city.name or None
-            data["asn"] = asn_info.autonomous_system_number or None
-
-    except FileNotFoundError as e:
-        logging.error(f"[GeoIP] Missing MaxMind DB file: {e}")
-    except Exception as e:
-        logging.warning(f"[GeoIP] Lookup failed for {client_ip}: {e}")
-
-    return data
 
 
 @app.route("/score", methods=["POST"])
@@ -70,17 +43,23 @@ def score_endpoint():
         enriched["username"] = username
         enriched["device_uuid"] = device_uuid
 
-        # Placeholder scores
-        heuristic_score = 0.0
         nn_score = -1
-        ensemble_score = -1
+        ip_risk_score = -2
+        impossible_travel = -1
+        threat_score = -1
 
         # Insert into DB
-        login_id = insert_login_event_from_json(enriched, username=username, ip_address=client_ip,
-                                                device_uuid=device_uuid,
-                                                extra_fields={"heuristic_score": heuristic_score, "nn_score": nn_score,
-                                                              "ensemble_score": ensemble_score,
-                                                              })
+        login_id = record_login_with_scores(
+            data=enriched,
+            username=username,
+            ip_address=client_ip,
+            device_uuid=device_uuid,
+            nn_score=nn_score,
+            ip_risk_score=ip_risk_score,
+            impossible_travel=impossible_travel,
+            final_score=threat_score
+        )
+
         if not login_id:
             return jsonify({"error": "Failed to record login event"}), 500
 

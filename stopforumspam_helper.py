@@ -1,5 +1,4 @@
 import os
-import time
 import ipaddress
 import requests
 from pathlib import Path
@@ -21,10 +20,6 @@ REFRESH_INTERVAL_HOURS = int(os.getenv("SFS_REFRESH_INTERVAL_HOURS", "24"))
 _cached_networks = None
 _cached_timestamp = None
 
-
-# ----------------------------
-# Internal helpers
-# ----------------------------
 
 def _ensure_sfs_dir():
     SFS_DIR.mkdir(parents=True, exist_ok=True)

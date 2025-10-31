@@ -1,3 +1,4 @@
+import logging
 import os
 import tarfile
 import requests
@@ -5,6 +6,9 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
+from ipaddress import ip_address as ip_parse
+
+from geoip2.database import Reader
 
 load_dotenv()
 
@@ -14,6 +18,7 @@ CITY_EDITION = "GeoLite2-City"
 ASN_EDITION = "GeoLite2-ASN"
 MAXMIND_BASE_URL = "https://download.maxmind.com/app/geoip_download"
 META_FILE = GEOIP_DIR / "metadata.txt"
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
 
 
 
@@ -124,3 +129,28 @@ def get_geoip_paths() -> dict:
         "city": GEOIP_DIR / f"{CITY_EDITION}.mmdb",
         "asn": GEOIP_DIR / f"{ASN_EDITION}.mmdb"
     }
+
+def enrich_with_geoip(data: dict, client_ip: str) -> dict:
+    paths = get_geoip_paths()
+
+    try:
+        ip_obj = ip_parse(client_ip)
+    except ValueError:
+        logging.warning(f"[GeoIP] Invalid IP address: {client_ip}")
+        return data
+
+    try:
+        with Reader(paths["city"]) as city_reader, Reader(paths["asn"]) as asn_reader:
+            city_info = city_reader.city(client_ip)
+            asn_info = asn_reader.asn(client_ip)
+
+            data["country"] = city_info.country.iso_code or None
+            data["city"] = city_info.city.name or None
+            data["asn"] = asn_info.autonomous_system_number or None
+
+    except FileNotFoundError as e:
+        logging.error(f"[GeoIP] Missing MaxMind DB file: {e}")
+    except Exception as e:
+        logging.warning(f"[GeoIP] Lookup failed for {client_ip}: {e}")
+
+    return data
