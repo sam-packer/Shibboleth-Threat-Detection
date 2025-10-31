@@ -151,12 +151,10 @@ def preview_heuristics(sample_limit: int = 2000):
     stats = compute_feature_statistics(df)
     df["heuristic_score"] = df.apply(lambda row: compute_dynamic_heuristic(row, stats), axis=1)
 
-    # --- Heuristic summary ---
     print(df[["key_count", "click_count", "idle_time_total_ms", "heuristic_score"]].head(10))
     print("\nHeuristic summary:")
     print(df["heuristic_score"].describe())
 
-    # --- Per-user sample adequacy ---
     try:
         with engine.connect() as conn:
             power_df = estimate_user_sample_power(conn)
@@ -176,7 +174,6 @@ def preview_heuristics(sample_limit: int = 2000):
         total = len(power_df)
         print(f"\n{qualified}/{total} users have stable data (relative margin < 10%).")
 
-        # Optional: give a basic histogram of user sample sizes
         print("\nLogin count distribution per user:")
         print(power_df["n"].describe())
 
