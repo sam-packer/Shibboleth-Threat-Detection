@@ -59,14 +59,14 @@ def estimate_user_sample_power(conn, max_margin: float = 0.10) -> pd.DataFrame:
         max_margin: allowable relative margin of error for the mean (10% default)
     """
     df = pd.read_sql(text("""
-        SELECT username,
-               COUNT(*) AS n,
-               AVG(click_count) AS mean_clicks,
-               STDDEV(click_count) AS std_clicks
-        FROM rba_login_event
-        WHERE nn_score = -1.0
-        GROUP BY username
-    """), conn)
+                          SELECT username,
+                                 COUNT(*)            AS n,
+                                 AVG(click_count)    AS mean_clicks,
+                                 STDDEV(click_count) AS std_clicks
+                          FROM rba_login_event
+                          WHERE nn_score = -1.0
+                          GROUP BY username
+                          """), conn)
 
     if df.empty:
         logging.warning("[Heuristics] No user data found for sample adequacy check.")
@@ -79,9 +79,20 @@ def estimate_user_sample_power(conn, max_margin: float = 0.10) -> pd.DataFrame:
     # 95% confidence interval width
     df["margin_of_error"] = 1.96 * (df["std_clicks"] / np.sqrt(df["n"].clip(lower=1)))
     df["rel_margin"] = df["margin_of_error"] / df["mean_clicks"]
-    df["sufficient_data"] = df["rel_margin"] < max_margin
-    df.loc[df["n"] < 50, "sufficient_data"] = False
-    df.loc[df["std_clicks"] == 0, "sufficient_data"] = False
+
+    # Required sample size for target relative margin
+    df["required_n"] = ((1.96 * df["std_clicks"] / df["mean_clicks"]) / max_margin) ** 2
+
+    # Initialize flag
+    df["sufficient_data"] = False
+
+    # Mark users as having sufficient data if:
+    #  - they have nonzero behavioral variance (std_clicks > 0)
+    #  - AND they have at least as many samples as required
+    df.loc[(df["std_clicks"] > 0) & (df["n"] >= df["required_n"]), "sufficient_data"] = True
+
+    # Treat zero-variance users as stable only if they have lots of data (e.g. ≥10)
+    df.loc[(df["std_clicks"] == 0) & (df["n"] >= 10), "sufficient_data"] = True
 
     qualified = df["sufficient_data"].sum()
     total = len(df)
@@ -164,7 +175,7 @@ def preview_heuristics(sample_limit: int = 2000):
 
         print("\nUser sample adequacy (first 10):")
         print(
-            power_df[["username", "n", "mean_clicks", "rel_margin", "sufficient_data"]]
+            power_df[["username", "n", "required_n", "mean_clicks", "rel_margin", "sufficient_data"]]
             .sort_values("n", ascending=False)
             .head(10)
             .to_string(index=False, float_format=lambda x: f"{x:.3f}")
@@ -203,35 +214,83 @@ def retroactively_backfill_heuristics(batch_size: int = 5000):
             stable_users = set(power_df.query("sufficient_data")["username"])
             logging.info(f"[Heuristics] {len(stable_users)} users qualified for scoring.")
 
+        base_query = text(f"""
+            SELECT login_id, username, {', '.join(FEATURE_COLUMNS)}
+            FROM rba_login_event
+            WHERE nn_score = -1.0
+            ORDER BY login_id
+            LIMIT :limit
+            OFFSET :offset
+        """)
+
+        update_statement = text("""
+                                UPDATE rba_login_event
+                                SET nn_score = :score
+                                WHERE login_id = :id
+                                  AND username = :username
+                                """)
+
+        total_updated = 0
+        total_skipped = 0
+        current_offset = 0
+
+        # Use a transaction for the entire loop
         with engine.begin() as conn:
-            result = conn.execute(text(f"""
-                SELECT login_id, username, {', '.join(FEATURE_COLUMNS)}
-                FROM rba_login_event
-                WHERE nn_score = -1.0
-            """))
-            rows = result.mappings().all()
-            logging.info(f"Fetched {len(rows)} candidate rows for backfill.")
+            while True:
+                logging.info(f"Processing batch at offset {current_offset}...")
 
-            updated = 0
-            skipped = 0
-            for row in rows:
-                if row["username"] not in stable_users:
-                    skipped += 1
-                    continue
-
-                score = compute_dynamic_heuristic(row, stats)
-                conn.execute(
-                    text("""
-                        UPDATE rba_login_event
-                        SET nn_score = :score
-                        WHERE login_id = :id AND username = :username
-                    """),
-                    {"score": score, "id": row["login_id"], "username": row["username"]}
+                # Fetch one batch of rows
+                result = conn.execute(
+                    base_query,
+                    {"limit": batch_size, "offset": current_offset}
                 )
-                updated += 1
+                rows = result.mappings().all()
 
-            logging.info(f"[Heuristics] Updated {updated} rows. "
-                         f"Skipped {skipped} rows due to insufficient data.")
+                if not rows:
+                    logging.info("No more rows to process.")
+                    break
+
+                # Process this batch in memory
+                updates_to_perform = []
+                skipped_in_batch = 0
+                for row in rows:
+                    if row["username"] not in stable_users:
+                        skipped_in_batch += 1
+                        continue
+
+                    score = compute_dynamic_heuristic(row, stats)
+                    updates_to_perform.append({
+                        "score": score,
+                        "id": row["login_id"],
+                        "username": row["username"]
+                    })
+
+                # Run ONE batch update for this batch
+                if updates_to_perform:
+                    conn.execute(update_statement, updates_to_perform)
+
+                    updated_in_batch = len(updates_to_perform)
+                    total_updated += updated_in_batch
+                    total_skipped += skipped_in_batch
+
+                    logging.info(f"Batch complete. Updated: {updated_in_batch}, "
+                                 f"Skipped: {skipped_in_batch}")
+                else:
+                    total_skipped += skipped_in_batch
+                    logging.info(f"Batch complete. No updates performed. "
+                                 f"Skipped: {skipped_in_batch}")
+
+                # Move to the next page/batch
+                current_offset += batch_size
+
+                # If we didn't get a full batch, we must be on the last page.
+                if len(rows) < batch_size:
+                    logging.info("Caught last batch.")
+                    break
+
+            logging.info(f"[Heuristics] Backfill complete. "
+                         f"Total Updated: {total_updated}. "
+                         f"Total Skipped: {total_skipped}.")
 
     except SQLAlchemyError as e:
         logging.error(f"[Heuristics] Backfill failed: {e}")
