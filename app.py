@@ -52,20 +52,19 @@ def score_endpoint():
             nn_score = compute_nn_score(username, enriched)
 
         # Compute the IP risk score
-        if ip_in_toxic_list(client_ip):
-            ip_risk_score = 1.0
-        else:
-            ip_risk_score = 0.0
+        ip_risk_score = 1.0 if ip_in_toxic_list(client_ip) else 0.0
 
-        # Ensemble the two scores
-        NN_WEIGHT = 0.8
-        IP_WEIGHT = 0.2
-
-        # If less than 0, we're in passthrough mode
+        # Escalation only ensemble (never depresses the NN)
         if nn_score < 0:
-            threat_score = ip_risk_score
+            threat_score = ip_risk_score  # passthrough mode
         else:
-            threat_score = (NN_WEIGHT * nn_score) + (IP_WEIGHT * ip_risk_score)
+            base = nn_score
+            # If IP is toxic, bump risk instead of averaging
+            if ip_risk_score >= 1.0:
+                # linear bump that caps at 1.0
+                threat_score = min(1.0, base + 0.25 * (1.0 - base))
+            else:
+                threat_score = base
 
         impossible_travel = -1
         threat_score = max(0.0, min(threat_score, 1.0))
