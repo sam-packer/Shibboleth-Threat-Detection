@@ -5,8 +5,7 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
-from scipy.special import expit
-from scipy.stats import mstats
+from datetime import datetime
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
@@ -25,11 +24,91 @@ FEATURE_COLUMNS = [
     "input_focus_count", "paste_events", "resize_events"
 ]
 
+# Weight features by their discriminative power for anomaly detection
+FEATURE_WEIGHTS = {
+    "click_count": 1.5,
+    "key_count": 1.5,
+    "avg_key_delay_ms": 2.0,  # Typing speed is very personal
+    "pointer_distance_px": 1.2,
+    "idle_time_total_ms": 1.0,
+    "time_to_first_key_ms": 1.3,
+    "time_to_first_click_ms": 1.3,
+    # Other features get default weight of 1.0
+}
 
-def fetch_baseline_sample(limit: int = 20000) -> pd.DataFrame:
+MIN_SAMPLES_FOR_PROFILE = 10  # Minimum logins needed for user profile
+
+
+def build_user_profiles(conn, min_samples: int = MIN_SAMPLES_FOR_PROFILE) -> pd.DataFrame:
     """
-    Fetches a random sample of login events to derive feature distributions.
-    We use these distributions to scale and normalize heuristic features.
+    Build behavioral profiles for each user with sufficient login history.
+
+    Returns DataFrame with columns:
+    - username
+    - n (number of samples)
+    - feature_mean (for each feature)
+    - feature_std (for each feature)
+    - sufficient_data (bool)
+    """
+    feature_aggs = []
+    for feat in FEATURE_COLUMNS:
+        feature_aggs.append(f"AVG({feat}) AS {feat}_mean")
+        feature_aggs.append(f"STDDEV({feat}) AS {feat}_std")
+
+    query = text(f"""
+        SELECT username,
+               COUNT(*) AS n,
+               {', '.join(feature_aggs)}
+        FROM rba_login_event
+        WHERE nn_score = -1.0
+        GROUP BY username
+        HAVING COUNT(*) >= :min_samples
+    """)
+
+    df = pd.read_sql(query, conn, params={"min_samples": min_samples})
+
+    # Mark users with sufficient non-zero variance as having reliable profiles
+    df["sufficient_data"] = True
+    for feat in FEATURE_COLUMNS:
+        std_col = f"{feat}_std"
+        if std_col in df.columns:
+            # If std is null or 0 for critical features, mark as insufficient
+            if feat in ["click_count", "key_count"]:
+                df.loc[df[std_col].fillna(0) == 0, "sufficient_data"] = False
+
+    logging.info(f"[Profiles] Built profiles for {len(df)} users with ≥{min_samples} logins.")
+    logging.info(f"[Profiles] {df['sufficient_data'].sum()} have sufficient behavioral variance.")
+
+    return df
+
+
+def get_all_user_stats(conn) -> pd.DataFrame:
+    """
+    Get login counts for ALL users (including those below threshold).
+    """
+    query = text("""
+                 SELECT username,
+                        COUNT(*) AS login_count
+                 FROM rba_login_event
+                 WHERE nn_score = -1.0
+                 GROUP BY username
+                 ORDER BY login_count DESC
+                 """)
+
+    df = pd.read_sql(query, conn)
+    df["has_profile"] = df["login_count"] >= MIN_SAMPLES_FOR_PROFILE
+    df["logins_needed"] = np.maximum(0, MIN_SAMPLES_FOR_PROFILE - df["login_count"])
+    df["status"] = df.apply(
+        lambda row: "USER_PROFILE" if row["has_profile"] else f"POPULATION (needs {int(row['logins_needed'])} more)",
+        axis=1
+    )
+
+    return df
+
+
+def compute_population_percentiles(conn, sample_size: int = 20000) -> dict:
+    """
+    Compute population-level percentiles for fallback scoring (new users).
     """
     query = text(f"""
         SELECT {', '.join(FEATURE_COLUMNS)}
@@ -38,247 +117,462 @@ def fetch_baseline_sample(limit: int = 20000) -> pd.DataFrame:
         ORDER BY random()
         LIMIT :limit
     """)
-    try:
-        with engine.connect() as conn:
-            df = pd.read_sql(query, conn, params={"limit": limit})
-        df = df.dropna(how="all")
-        logging.info(f"Loaded {len(df)} baseline rows for heuristic calibration.")
-        return df
-    except SQLAlchemyError as e:
-        logging.error(f"[Heuristics] DB fetch failed: {e}")
-        return pd.DataFrame()
+
+    df = pd.read_sql(query, conn, params={"limit": sample_size})
+
+    percentiles = {}
+    for feat in FEATURE_COLUMNS:
+        if feat in df.columns:
+            series = df[feat].dropna()
+            if len(series) > 0:
+                percentiles[feat] = {
+                    "p25": np.percentile(series, 25),
+                    "p50": np.percentile(series, 50),
+                    "p75": np.percentile(series, 75),
+                    "p90": np.percentile(series, 90),
+                    "p95": np.percentile(series, 95)
+                }
+
+    logging.info(f"[Population] Computed percentiles from {len(df)} samples.")
+    return percentiles
 
 
-def estimate_user_sample_adequacy(conn, max_margin: float = 0.10) -> pd.DataFrame:
+def score_against_user_profile(login_row: dict, profile: dict) -> tuple[float, dict]:
     """
-    Determines if each user has a statistically sufficient number of samples (logins, 'n')
-    to reliably estimate their mean click count (mean_clicks) within a target
-    Relative Margin of Error (RME).
+    Score a login based on deviation from the user's personal behavioral profile.
 
-    This calculates the Required Sample Size (required_n) to ensure the 95%
-    Confidence Interval width is no more than max_margin of the mean.
-
-    Args:
-        conn: active SQLAlchemy connection.
-        max_margin: The target maximum allowable Relative Margin of Error for
-                    the mean click count (e.g., 0.10 for a 10% maximum error).
-    
     Returns:
-        A DataFrame with user statistics, including the boolean column 
-        'sufficient_data' indicating sample adequacy.
+    - risk score [0, 1]
+    - dict of per-feature z-scores for transparency
     """
-    df = pd.read_sql(text("""
-                          SELECT username,
-                                 COUNT(*)            AS n,
-                                 AVG(click_count)    AS mean_clicks,
-                                 STDDEV(click_count) AS std_clicks
-                          FROM rba_login_event
-                          WHERE nn_score = -1.0
-                          GROUP BY username
-                          """), conn)
+    anomaly_scores = []
+    feature_details = {}
 
-    if df.empty:
-        logging.warning("[Heuristics] No user data found for sample adequacy check.")
-        return df
+    for feat in FEATURE_COLUMNS:
+        value = login_row.get(feat)
+        mean = profile.get(f"{feat}_mean")
+        std = profile.get(f"{feat}_std")
 
-    # Handle division safely
-    df["std_clicks"].fillna(0.0, inplace=True)
-    df["mean_clicks"].replace(0.0, np.nan, inplace=True)
+        # Skip if data is missing
+        if value is None or mean is None or std is None:
+            continue
+        if np.isnan(value) or np.isnan(mean) or np.isnan(std):
+            continue
 
-    # 95% confidence interval width
-    df["margin_of_error"] = 1.96 * (df["std_clicks"] / np.sqrt(df["n"].clip(lower=1)))
-    df["rel_margin"] = df["margin_of_error"] / df["mean_clicks"]
+        # Skip if no variance (std = 0)
+        if std == 0:
+            if abs(value - mean) < 0.01:
+                z_score = 0.0
+            else:
+                z_score = 5.0  # Very anomalous
+        else:
+            z_score = abs(value - mean) / std
 
-    # Required sample size for target relative margin   
-    df["required_n"] = ((1.96 * df["std_clicks"] / df["mean_clicks"]) / max_margin) ** 2
+        # Apply feature weight
+        weight = FEATURE_WEIGHTS.get(feat, 1.0)
+        weighted_z = z_score * weight
 
-    # Initialize flag
-    df["sufficient_data"] = False
+        anomaly_scores.append(weighted_z)
+        feature_details[feat] = {
+            "value": value,
+            "user_mean": mean,
+            "user_std": std,
+            "z_score": z_score,
+            "weighted_z": weighted_z
+        }
 
-    # Mark users as having sufficient data if:
-    #  - they have nonzero behavioral variance (std_clicks > 0)
-    #  - AND they have at least as many samples as required
-    df.loc[(df["std_clicks"] > 0) & (df["n"] >= df["required_n"]), "sufficient_data"] = True
+    if not anomaly_scores:
+        return 0.5, {}
 
-    # Treat zero-variance users as stable only if they have lots of data (e.g. ≥10)
-    df.loc[(df["std_clicks"] == 0) & (df["n"] >= 10), "sufficient_data"] = True
+    # Use the 75th percentile of anomaly scores
+    anomaly_level = np.percentile(anomaly_scores, 75)
 
-    qualified = df["sufficient_data"].sum()
-    total = len(df)
-    logging.info(f"[Heuristics] {qualified}/{total} users have stable data "
-                 f"(relative margin < {max_margin:.0%}).")
-    return df
+    # Convert to probability
+    risk = 1 / (1 + np.exp(-0.8 * (anomaly_level - 2.5)))
+
+    return float(np.clip(risk, 0.0, 1.0)), feature_details
 
 
-def compute_feature_statistics(df: pd.DataFrame) -> dict:
+def score_against_population(login_row: dict, percentiles: dict) -> tuple[float, dict]:
     """
-    Compute robust statistics for each feature: mean, std, percentiles.
-    """
-    stats = {}
-    for col in FEATURE_COLUMNS:
-        if col in df.columns and df[col].notna().any():
-            series = df[col].astype(float)
-            stats[col] = {
-                "mean": series.mean(),
-                "wmean": mstats.winsorize(series, limits=[0.025, 0.025]).mean(),
-                "std": series.std(ddof=0),
-                "p05": np.percentile(series, 5),
-                "p25": np.percentile(series, 25),
-                "p50": np.percentile(series, 50),
-                "p75": np.percentile(series, 75),
-                "p95": np.percentile(series, 95),
-                "mad": (series - np.percentile(series, 50)).abs().median(),
-                "min": series.min(),
-                "max": series.max(),
-            }
-    return stats
+    Score a login based on population percentiles (for users without profiles).
 
-
-def compute_dynamic_heuristic(row: dict, stats: dict) -> float:
+    Returns:
+    - risk score [0, 1]
+    - dict of per-feature deviation details
     """
-    Compute a dynamic heuristic score based on normalized z-scores and deviations.
-    The idea: users whose behavior is far from the median get higher risk.
-    """
-    z_scores = []
+    outlier_scores = []
+    feature_details = {}
 
-    for feature, meta in stats.items():
-        value = row.get(feature)
+    for feat in FEATURE_COLUMNS:
+        value = login_row.get(feat)
         if value is None or np.isnan(value):
             continue
-        mad = meta.get("mad", 0.0)
-        mad_scale = (mad * 1.4826) if mad > 0 else 1.0
-        z = abs((value - meta["wmean"]) / mad_scale)
-        z_scores.append(z)
 
-    if not z_scores:
-        return 0.0
+        if feat not in percentiles:
+            continue
 
-    # Aggregate deviation across all features
-    mean_deviation = np.mean(z_scores)
+        pct = percentiles[feat]
 
-    # Sigmoid transform to bound between 0–1
-    risk = expit(mean_deviation - 1.0)  # shift so typical behavior ≈0.3–0.4
-    return float(np.clip(risk, 0.0, 1.0))
+        # Determine how extreme this value is
+        if value < pct["p25"]:
+            range_size = pct["p25"] - pct["p50"]
+            if range_size > 0:
+                deviation = (pct["p25"] - value) / range_size
+            else:
+                deviation = 1.0
+            position = "below_p25"
+        elif value > pct["p75"]:
+            range_size = pct["p75"] - pct["p50"]
+            if range_size > 0:
+                deviation = (value - pct["p75"]) / range_size
+            else:
+                deviation = 1.0
+            position = "above_p75"
+        else:
+            deviation = 0.0
+            position = "normal"
+
+        # Flag if beyond 95th percentile
+        if value > pct["p95"]:
+            deviation = max(deviation, 3.0)
+            position = "above_p95"
+
+        weight = FEATURE_WEIGHTS.get(feat, 1.0)
+        weighted_dev = deviation * weight
+        outlier_scores.append(weighted_dev)
+
+        feature_details[feat] = {
+            "value": value,
+            "pop_p50": pct["p50"],
+            "pop_p75": pct["p75"],
+            "pop_p95": pct["p95"],
+            "deviation": deviation,
+            "weighted_dev": weighted_dev,
+            "position": position
+        }
+
+    if not outlier_scores:
+        return 0.3, {}
+
+    outlier_level = np.percentile(outlier_scores, 75)
+    risk = 0.3 + 0.6 / (1 + np.exp(-1.0 * (outlier_level - 1.0)))
+
+    return float(np.clip(risk, 0.0, 1.0)), feature_details
+
+
+def create_detailed_report(output_file: str = None) -> str:
+    """
+    Generate comprehensive Excel report with multiple sheets for transparency.
+
+    Returns: filename of created report
+    """
+    if output_file is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"heuristic_report_{timestamp}.xlsx"
+
+    try:
+        with engine.connect() as conn:
+            logging.info("[Report] Building user profiles...")
+            profiles_df = build_user_profiles(conn, min_samples=MIN_SAMPLES_FOR_PROFILE)
+
+            logging.info("[Report] Getting all user statistics...")
+            all_users_df = get_all_user_stats(conn)
+
+            logging.info("[Report] Computing population percentiles...")
+            pop_pct = compute_population_percentiles(conn, sample_size=20000)
+
+            # Convert profiles to dict for lookup
+            profiles_dict = {}
+            for _, row in profiles_df.iterrows():
+                if row["sufficient_data"]:
+                    profiles_dict[row["username"]] = row.to_dict()
+
+            logging.info("[Report] Sampling recent logins for scoring...")
+            # Get a reasonable sample of recent logins
+            query = text(f"""
+                SELECT login_id, username, event_timestamp, {', '.join(FEATURE_COLUMNS)}
+                FROM rba_login_event
+                WHERE nn_score = -1.0
+                ORDER BY login_id DESC
+                LIMIT 500
+            """)
+
+            sample_df = pd.read_sql(query, conn)
+
+            if sample_df.empty:
+                logging.warning("[Report] No login data found.")
+                return None
+
+            logging.info(f"[Report] Scoring {len(sample_df)} logins...")
+            # Score each login with detailed breakdown
+            scored_logins = []
+            feature_breakdowns = []
+
+            for _, row in sample_df.iterrows():
+                username = row["username"]
+                login_id = row["login_id"]
+
+                if username in profiles_dict:
+                    score, details = score_against_user_profile(row.to_dict(), profiles_dict[username])
+                    method = "USER_PROFILE"
+                else:
+                    score, details = score_against_population(row.to_dict(), pop_pct)
+                    method = "POPULATION"
+
+                # Add to scored logins summary
+                scored_logins.append({
+                    "login_id": login_id,
+                    "username": username,
+                    "timestamp": row.get("timestamp"),
+                    "risk_score": score,
+                    "scoring_method": method,
+                    "click_count": row["click_count"],
+                    "key_count": row["key_count"],
+                    "idle_time_total_ms": row["idle_time_total_ms"],
+                    "avg_key_delay_ms": row.get("avg_key_delay_ms")
+                })
+
+                # Add feature-level details
+                for feat, detail in details.items():
+                    breakdown_entry = {
+                        "login_id": login_id,
+                        "username": username,
+                        "scoring_method": method,
+                        "feature": feat,
+                        "value": detail.get("value"),
+                        "feature_weight": FEATURE_WEIGHTS.get(feat, 1.0)
+                    }
+
+                    # Add method-specific columns
+                    if method == "USER_PROFILE":
+                        breakdown_entry.update({
+                            "user_mean": detail.get("user_mean"),
+                            "user_std": detail.get("user_std"),
+                            "z_score": detail.get("z_score"),
+                            "weighted_z": detail.get("weighted_z")
+                        })
+                    else:  # POPULATION
+                        breakdown_entry.update({
+                            "pop_p50": detail.get("pop_p50"),
+                            "pop_p75": detail.get("pop_p75"),
+                            "pop_p95": detail.get("pop_p95"),
+                            "deviation": detail.get("deviation"),
+                            "weighted_dev": detail.get("weighted_dev"),
+                            "position": detail.get("position")
+                        })
+
+                    feature_breakdowns.append(breakdown_entry)
+
+            scored_df = pd.DataFrame(scored_logins)
+            features_df = pd.DataFrame(feature_breakdowns)
+
+            # Create summary statistics
+            summary_stats = []
+
+            # Overall statistics
+            summary_stats.append({
+                "Metric": "Total Logins Analyzed",
+                "Value": len(scored_df)
+            })
+            summary_stats.append({
+                "Metric": "Mean Risk Score",
+                "Value": f"{scored_df['risk_score'].mean():.3f}"
+            })
+            summary_stats.append({
+                "Metric": "Median Risk Score",
+                "Value": f"{scored_df['risk_score'].median():.3f}"
+            })
+            summary_stats.append({
+                "Metric": "High Risk Logins (>0.7)",
+                "Value": (scored_df['risk_score'] > 0.7).sum()
+            })
+            summary_stats.append({
+                "Metric": "",
+                "Value": ""
+            })
+
+            # By method
+            for method in ["USER_PROFILE", "POPULATION"]:
+                method_df = scored_df[scored_df["scoring_method"] == method]
+                if len(method_df) > 0:
+                    summary_stats.append({
+                        "Metric": f"{method} - Count",
+                        "Value": len(method_df)
+                    })
+                    summary_stats.append({
+                        "Metric": f"{method} - Mean Score",
+                        "Value": f"{method_df['risk_score'].mean():.3f}"
+                    })
+                    summary_stats.append({
+                        "Metric": f"{method} - Std Dev",
+                        "Value": f"{method_df['risk_score'].std():.3f}"
+                    })
+                    summary_stats.append({
+                        "Metric": "",
+                        "Value": ""
+                    })
+
+            # User coverage
+            summary_stats.append({
+                "Metric": "Total Users in System",
+                "Value": len(all_users_df)
+            })
+            summary_stats.append({
+                "Metric": "Users with Profiles",
+                "Value": all_users_df["has_profile"].sum()
+            })
+            summary_stats.append({
+                "Metric": "Users Needing More Data",
+                "Value": (~all_users_df["has_profile"]).sum()
+            })
+            summary_stats.append({
+                "Metric": "Min Logins for Profile",
+                "Value": MIN_SAMPLES_FOR_PROFILE
+            })
+
+            summary_df = pd.DataFrame(summary_stats)
+
+            # Population percentiles sheet
+            pop_data = []
+            for feat, pcts in pop_pct.items():
+                pop_data.append({
+                    "Feature": feat,
+                    "Weight": FEATURE_WEIGHTS.get(feat, 1.0),
+                    "P25": pcts["p25"],
+                    "P50_Median": pcts["p50"],
+                    "P75": pcts["p75"],
+                    "P90": pcts["p90"],
+                    "P95": pcts["p95"]
+                })
+            pop_df = pd.DataFrame(pop_data)
+
+            # Write to Excel
+            logging.info(f"[Report] Writing to {output_file}...")
+            with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+                summary_df.to_excel(writer, sheet_name="Summary", index=False)
+                all_users_df.to_excel(writer, sheet_name="All Users", index=False)
+                scored_df.to_excel(writer, sheet_name="Scored Logins", index=False)
+                features_df.to_excel(writer, sheet_name="Feature Breakdown", index=False)
+                pop_df.to_excel(writer, sheet_name="Population Stats", index=False)
+
+                # If we have user profiles, add them
+                if not profiles_df.empty:
+                    # Reshape for readability
+                    profile_summary = profiles_df[["username", "n", "sufficient_data"]].copy()
+                    profile_summary.columns = ["Username", "Login_Count", "Has_Valid_Profile"]
+                    profile_summary.to_excel(writer, sheet_name="User Profiles", index=False)
+
+            logging.info(f"[Report] ✓ Report saved to {output_file}")
+
+            # Print console summary
+            print("\n" + "=" * 80)
+            print(f"HEURISTIC SCORING REPORT GENERATED: {output_file}")
+            print("=" * 80)
+            print("\n📊 SUMMARY STATISTICS")
+            print("-" * 80)
+            print(summary_df.to_string(index=False))
+
+            print("\n\n👥 USER COVERAGE")
+            print("-" * 80)
+            print(all_users_df.to_string(index=False))
+
+            print("\n\n🎯 SCORE DISTRIBUTION BY METHOD")
+            print("-" * 80)
+            print(scored_df.groupby("scoring_method")["risk_score"].describe())
+
+            print("\n\n🔝 TOP 10 HIGHEST RISK LOGINS")
+            print("-" * 80)
+            top_risk = scored_df.nlargest(10, "risk_score")[
+                ["login_id", "username", "risk_score", "scoring_method", "click_count", "key_count"]
+            ]
+            print(top_risk.to_string(index=False))
+
+            print("\n\n💡 KEY INSIGHTS")
+            print("-" * 80)
+            user_profile_count = (scored_df["scoring_method"] == "USER_PROFILE").sum()
+            population_count = (scored_df["scoring_method"] == "POPULATION").sum()
+
+            if user_profile_count > 0 and population_count > 0:
+                user_mean = scored_df[scored_df["scoring_method"] == "USER_PROFILE"]["risk_score"].mean()
+                pop_mean = scored_df[scored_df["scoring_method"] == "POPULATION"]["risk_score"].mean()
+                diff = ((pop_mean - user_mean) / user_mean) * 100
+
+                print(f"✓ User-profiled logins score {diff:.1f}% LOWER than population-based scoring")
+                print(f"✓ This validates that personalization is critical for accurate risk assessment")
+            elif user_profile_count > 0:
+                print(f"✓ All {user_profile_count} logins used personalized user profiles for scoring")
+                print(f"✓ Mean risk score: {scored_df['risk_score'].mean():.3f} (personalized baseline)")
+
+            users_needing_data = (~all_users_df["has_profile"]).sum()
+            if users_needing_data > 0:
+                print(f"\n⚠️  {users_needing_data} users still need more logins before personalized scoring")
+                print(f"   They need {MIN_SAMPLES_FOR_PROFILE} total logins for reliable profiles")
+            else:
+                print(f"\n✓ All {len(all_users_df)} users have sufficient data for personalized profiles")
+                print(f"   System is fully personalized - no users falling back to population scoring")
+
+            high_risk_count = (scored_df["risk_score"] > 0.7).sum()
+            if high_risk_count > 0:
+                print(f"\n⚠️  {high_risk_count} high-risk logins detected (score > 0.7)")
+                print(f"   Review these in the 'Scored Logins' sheet for potential anomalies")
+
+            print("\n" + "=" * 80)
+
+            return output_file
+
+    except SQLAlchemyError as e:
+        logging.error(f"[Report] Failed: {e}")
+        return None
 
 
 def preview_heuristics(sample_limit: int = 2000):
     """
-    Preview heuristic distributions and user sample stability before committing updates.
+    Generate comprehensive report (replaces simple preview).
     """
-    df = fetch_baseline_sample(sample_limit)
-    if df.empty:
-        print("No data available.")
-        return
-
-    stats = compute_feature_statistics(df)
-    # ------------------------------------------------------------------
-    # [START OF NEW CODE BLOCK]
-    # --- START: Show Robust Stats Comparison ---
-    print("\nFeature Statistics Comparison (Robustness Check):")
-    
-    # Features to display for comparison
-    key_features = ["click_count", "key_count", "idle_time_total_ms"] 
-    
-    stats_data = []
-    for feature in key_features:
-        if feature in stats:
-            # We assume 'wmean' and 'mad' are calculated in compute_feature_statistics
-            stats_data.append({
-                "Feature": feature,
-                "Mean": stats[feature].get("mean", np.nan),
-                "WMean": stats[feature].get("wmean", np.nan),
-                "STD": stats[feature].get("std", np.nan),
-                # Scale MAD by 1.4826 to estimate the equivalent STD (for easy comparison)
-                "MAD_Scaled": stats[feature].get("mad", np.nan) * 1.4826 
-            })
-
-    stats_df = pd.DataFrame(stats_data)
-    print(stats_df.to_string(index=False, float_format=lambda x: f"{x:.2f}"))
-    # --- END: Show Robust Stats Comparison ---
-    # [END OF NEW CODE BLOCK]
-    # ------------------------------------------------------------------
-
-
-    df["heuristic_score"] = df.apply(lambda row: compute_dynamic_heuristic(row, stats), axis=1)
-
-    print(df[["key_count", "click_count", "idle_time_total_ms", "heuristic_score"]].head(10))
-    print("\nHeuristic summary:")
-    print(df["heuristic_score"].describe())
-
-    try:
-        with engine.connect() as conn:
-            power_df = estimate_user_sample_adequacy(conn)
-            if power_df.empty:
-                print("\nNo user sample data found.")
-                return
-
-        print("\nUser sample adequacy (first 10):")
-        print(
-            power_df[["username", "n", "required_n", "mean_clicks", "rel_margin", "sufficient_data"]]
-            .sort_values("n", ascending=False)
-            .head(10)
-            .to_string(index=False, float_format=lambda x: f"{x:.3f}")
-        )
-
-        qualified = power_df["sufficient_data"].sum()
-        total = len(power_df)
-        print(f"\n{qualified}/{total} users have stable data (relative margin < 10%).")
-
-        print("\nLogin count distribution per user:")
-        print(power_df["n"].describe())
-
-    except SQLAlchemyError as e:
-        logging.error(f"[Heuristics] Sample adequacy preview failed: {e}")
+    create_detailed_report()
 
 
 def retroactively_backfill_heuristics(batch_size: int = 5000):
     """
-    Compute heuristic scores for logins without a neural net score (nn_score=-1.0),
-    but only for users whose behavioral data is statistically stable.
+    Compute and store heuristic scores for all logins with nn_score = -1.0
     """
-    baseline = fetch_baseline_sample(batch_size * 2)
-    if baseline.empty:
-        print("No baseline data for heuristics.")
-        return
-
-    stats = compute_feature_statistics(baseline)
-
     try:
-        with engine.connect() as conn:
-            power_df = estimate_user_sample_adequacy(conn)
-            if power_df.empty:
-                logging.warning("[Heuristics] Skipping update, no users qualified.")
-                return
-
-            stable_users = set(power_df.query("sufficient_data")["username"])
-            logging.info(f"[Heuristics] {len(stable_users)} users qualified for scoring.")
-
-        base_query = text(f"""
-            SELECT login_id, username, {', '.join(FEATURE_COLUMNS)}
-            FROM rba_login_event
-            WHERE nn_score = -1.0
-            ORDER BY login_id
-            LIMIT :limit
-            OFFSET :offset
-        """)
-
-        update_statement = text("""
-                                UPDATE rba_login_event
-                                SET nn_score = :score
-                                WHERE login_id = :id
-                                  AND username = :username
-                                """)
-
-        total_updated = 0
-        total_skipped = 0
-        current_offset = 0
-
-        # Use a transaction for the entire loop
         with engine.begin() as conn:
+            # Build user profiles
+            profiles_df = build_user_profiles(conn, min_samples=MIN_SAMPLES_FOR_PROFILE)
+            pop_pct = compute_population_percentiles(conn, sample_size=20000)
+
+            # Convert profiles to dict for faster lookup
+            profiles_dict = {}
+            for _, row in profiles_df.iterrows():
+                if row["sufficient_data"]:
+                    profiles_dict[row["username"]] = row.to_dict()
+
+            logging.info(f"[Backfill] Loaded {len(profiles_dict)} user profiles.")
+
+            # Process in batches
+            base_query = text(f"""
+                SELECT login_id, username, {', '.join(FEATURE_COLUMNS)}
+                FROM rba_login_event
+                WHERE nn_score = -1.0
+                ORDER BY login_id
+                LIMIT :limit
+                OFFSET :offset
+            """)
+
+            update_statement = text("""
+                                    UPDATE rba_login_event
+                                    SET nn_score = :score
+                                    WHERE login_id = :id
+                                    """)
+
+            total_updated = 0
+            current_offset = 0
+
             while True:
                 logging.info(f"Processing batch at offset {current_offset}...")
 
-                # Fetch one batch of rows
                 result = conn.execute(
                     base_query,
                     {"limit": batch_size, "offset": current_offset}
@@ -289,50 +583,33 @@ def retroactively_backfill_heuristics(batch_size: int = 5000):
                     logging.info("No more rows to process.")
                     break
 
-                # Process this batch in memory
-                updates_to_perform = []
-                skipped_in_batch = 0
+                # Score each login
+                updates = []
                 for row in rows:
-                    if row["username"] not in stable_users:
-                        skipped_in_batch += 1
-                        continue
+                    username = row["username"]
 
-                    score = compute_dynamic_heuristic(row, stats)
-                    updates_to_perform.append({
-                        "score": score,
-                        "id": row["login_id"],
-                        "username": row["username"]
-                    })
+                    if username in profiles_dict:
+                        score, _ = score_against_user_profile(row, profiles_dict[username])
+                    else:
+                        score, _ = score_against_population(row, pop_pct)
 
-                # Run ONE batch update for this batch
-                if updates_to_perform:
-                    conn.execute(update_statement, updates_to_perform)
+                    updates.append({"score": score, "id": row["login_id"]})
 
-                    updated_in_batch = len(updates_to_perform)
-                    total_updated += updated_in_batch
-                    total_skipped += skipped_in_batch
+                # Batch update
+                if updates:
+                    conn.execute(update_statement, updates)
+                    total_updated += len(updates)
+                    logging.info(f"Updated {len(updates)} logins in this batch.")
 
-                    logging.info(f"Batch complete. Updated: {updated_in_batch}, "
-                                 f"Skipped: {skipped_in_batch}")
-                else:
-                    total_skipped += skipped_in_batch
-                    logging.info(f"Batch complete. No updates performed. "
-                                 f"Skipped: {skipped_in_batch}")
-
-                # Move to the next page/batch
                 current_offset += batch_size
 
-                # If we didn't get a full batch, we must be on the last page.
                 if len(rows) < batch_size:
-                    logging.info("Caught last batch.")
                     break
 
-            logging.info(f"[Heuristics] Backfill complete. "
-                         f"Total Updated: {total_updated}. "
-                         f"Total Skipped: {total_skipped}.")
+            logging.info(f"[Backfill] Complete. Total updated: {total_updated}")
 
     except SQLAlchemyError as e:
-        logging.error(f"[Heuristics] Backfill failed: {e}")
+        logging.error(f"[Backfill] Failed: {e}")
 
 
 if __name__ == "__main__":
@@ -340,39 +617,39 @@ if __name__ == "__main__":
     import sys
 
     parser = argparse.ArgumentParser(
-        description=(
-            "Heuristic backfill tool for Risk-Based Authentication (RBA). "
-            "It calculates heuristic scores only for logins where nn_score = -1.0 "
-            "(typically collected in passthrough mode). Existing scores will not be modified."
-        )
+        description="User-centric heuristic scoring for Risk-Based Authentication (RBA)."
     )
 
     parser.add_argument(
         "--preview",
         action="store_true",
-        help="Preview heuristic statistics and sample scores (no database writes)."
+        help="Generate detailed Excel report with scoring analysis (no database writes)."
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        help="Custom output filename for Excel report (default: heuristic_report_TIMESTAMP.xlsx)"
     )
     parser.add_argument(
         "--batch",
         type=int,
         default=5000,
-        help="Number of rows to sample or update per batch (default: 5000)."
+        help="Number of rows per batch for backfill (default: 5000)."
     )
     parser.add_argument(
         "--write",
         action="store_true",
-        help="!!! IRREVERSIBLE, backup recommended !!! Apply heuristic scores to the database."
+        help="Apply heuristic scores to database (requires backup)."
     )
 
     args = parser.parse_args()
 
-    # If no args provided, show help and exit
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(0)
 
     if args.preview:
-        preview_heuristics(sample_limit=args.batch)
+        create_detailed_report(output_file=args.output)
     elif args.write:
         retroactively_backfill_heuristics(batch_size=args.batch)
     else:

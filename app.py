@@ -5,6 +5,7 @@ import random
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from geoip_helper import ensure_geoip_up_to_date, enrich_with_geoip
+from nn_helper import compute_nn_score, load_model_and_scaler
 from stopforumspam_helper import ensure_sfs_up_to_date
 from db_helper import db_health_check, record_login_with_scores
 
@@ -20,6 +21,7 @@ def preflight():
     ensure_geoip_up_to_date()
     ensure_sfs_up_to_date()
     db_health_check()
+    load_model_and_scaler()
     return True
 
 
@@ -43,7 +45,11 @@ def score_endpoint():
         enriched["username"] = username
         enriched["device_uuid"] = device_uuid
 
-        nn_score = -1
+        if PASSTHROUGH_MODE:
+            nn_score = -1
+        else:
+            nn_score = compute_nn_score(username, enriched)
+
         ip_risk_score = -1
         impossible_travel = -1
         threat_score = -1
@@ -63,10 +69,7 @@ def score_endpoint():
         if not login_id:
             return jsonify({"error": "Failed to record login event"}), 500
 
-        # You know, if we get an R2 lower than 0.5, this would be more effective
-        threat_score = random.random()
-
-        return jsonify({"threatScore": threat_score})
+        return jsonify({"threatScore": nn_score})
 
     except Exception as e:
         logging.error(f"[API] /score failed: {e}", exc_info=True)

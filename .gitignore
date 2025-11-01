@@ -3,3 +3,7 @@ __pycache__
 geoip_data
 stopforumspam_data
 .env
+*.xlsx
+*.pt
+*.pkl
+.DS_Store
