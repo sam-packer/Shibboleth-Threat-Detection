@@ -85,7 +85,7 @@ def score_endpoint():
         if not login_id:
             return jsonify({"error": "Failed to record login event"}), 500
 
-        return jsonify({"threatScore": nn_score})
+        return jsonify({"threatScore": threat_score})
 
     except Exception as e:
         logging.error(f"[API] /score failed: {e}", exc_info=True)
