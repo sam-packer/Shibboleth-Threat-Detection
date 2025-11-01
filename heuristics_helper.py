@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
 from scipy.special import expit
+from scipy.stats import mstats
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
@@ -48,15 +49,23 @@ def fetch_baseline_sample(limit: int = 20000) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def estimate_user_sample_power(conn, max_margin: float = 0.10) -> pd.DataFrame:
+def estimate_user_sample_adequacy(conn, max_margin: float = 0.10) -> pd.DataFrame:
     """
-    Estimate how many logins each user has and whether they have enough
-    behavioral data for reliable heuristic scoring.
-    Uses click_count variance as a proxy for behavioral stability.
+    Determines if each user has a statistically sufficient number of samples (logins, 'n')
+    to reliably estimate their mean click count (mean_clicks) within a target
+    Relative Margin of Error (RME).
+
+    This calculates the Required Sample Size (required_n) to ensure the 95%
+    Confidence Interval width is no more than max_margin of the mean.
 
     Args:
-        conn: active SQLAlchemy connection
-        max_margin: allowable relative margin of error for the mean (10% default)
+        conn: active SQLAlchemy connection.
+        max_margin: The target maximum allowable Relative Margin of Error for
+                    the mean click count (e.g., 0.10 for a 10% maximum error).
+    
+    Returns:
+        A DataFrame with user statistics, including the boolean column 
+        'sufficient_data' indicating sample adequacy.
     """
     df = pd.read_sql(text("""
                           SELECT username,
@@ -80,7 +89,7 @@ def estimate_user_sample_power(conn, max_margin: float = 0.10) -> pd.DataFrame:
     df["margin_of_error"] = 1.96 * (df["std_clicks"] / np.sqrt(df["n"].clip(lower=1)))
     df["rel_margin"] = df["margin_of_error"] / df["mean_clicks"]
 
-    # Required sample size for target relative margin
+    # Required sample size for target relative margin   
     df["required_n"] = ((1.96 * df["std_clicks"] / df["mean_clicks"]) / max_margin) ** 2
 
     # Initialize flag
@@ -111,12 +120,14 @@ def compute_feature_statistics(df: pd.DataFrame) -> dict:
             series = df[col].astype(float)
             stats[col] = {
                 "mean": series.mean(),
+                "wmean": mstats.winsorize(series, limits=[0.025, 0.025]).mean(),
                 "std": series.std(ddof=0),
                 "p05": np.percentile(series, 5),
                 "p25": np.percentile(series, 25),
                 "p50": np.percentile(series, 50),
                 "p75": np.percentile(series, 75),
                 "p95": np.percentile(series, 95),
+                "mad": (series - np.percentile(series, 50)).abs().median(),
                 "min": series.min(),
                 "max": series.max(),
             }
@@ -134,9 +145,9 @@ def compute_dynamic_heuristic(row: dict, stats: dict) -> float:
         value = row.get(feature)
         if value is None or np.isnan(value):
             continue
-
-        std = meta["std"] if meta["std"] > 0 else 1.0
-        z = abs((value - meta["p50"]) / std)
+        mad = meta.get("mad", 0.0)
+        mad_scale = (mad * 1.4826) if mad > 0 else 1.0
+        z = abs((value - meta["wmean"]) / mad_scale)
         z_scores.append(z)
 
     if not z_scores:
@@ -160,6 +171,34 @@ def preview_heuristics(sample_limit: int = 2000):
         return
 
     stats = compute_feature_statistics(df)
+    # ------------------------------------------------------------------
+    # [START OF NEW CODE BLOCK]
+    # --- START: Show Robust Stats Comparison ---
+    print("\nFeature Statistics Comparison (Robustness Check):")
+    
+    # Features to display for comparison
+    key_features = ["click_count", "key_count", "idle_time_total_ms"] 
+    
+    stats_data = []
+    for feature in key_features:
+        if feature in stats:
+            # We assume 'wmean' and 'mad' are calculated in compute_feature_statistics
+            stats_data.append({
+                "Feature": feature,
+                "Mean": stats[feature].get("mean", np.nan),
+                "WMean": stats[feature].get("wmean", np.nan),
+                "STD": stats[feature].get("std", np.nan),
+                # Scale MAD by 1.4826 to estimate the equivalent STD (for easy comparison)
+                "MAD_Scaled": stats[feature].get("mad", np.nan) * 1.4826 
+            })
+
+    stats_df = pd.DataFrame(stats_data)
+    print(stats_df.to_string(index=False, float_format=lambda x: f"{x:.2f}"))
+    # --- END: Show Robust Stats Comparison ---
+    # [END OF NEW CODE BLOCK]
+    # ------------------------------------------------------------------
+
+
     df["heuristic_score"] = df.apply(lambda row: compute_dynamic_heuristic(row, stats), axis=1)
 
     print(df[["key_count", "click_count", "idle_time_total_ms", "heuristic_score"]].head(10))
@@ -168,7 +207,7 @@ def preview_heuristics(sample_limit: int = 2000):
 
     try:
         with engine.connect() as conn:
-            power_df = estimate_user_sample_power(conn)
+            power_df = estimate_user_sample_adequacy(conn)
             if power_df.empty:
                 print("\nNo user sample data found.")
                 return
@@ -206,7 +245,7 @@ def retroactively_backfill_heuristics(batch_size: int = 5000):
 
     try:
         with engine.connect() as conn:
-            power_df = estimate_user_sample_power(conn)
+            power_df = estimate_user_sample_adequacy(conn)
             if power_df.empty:
                 logging.warning("[Heuristics] Skipping update, no users qualified.")
                 return
