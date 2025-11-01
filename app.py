@@ -44,7 +44,7 @@ def score_endpoint():
         enriched["device_uuid"] = device_uuid
 
         nn_score = -1
-        ip_risk_score = -2
+        ip_risk_score = -1
         impossible_travel = -1
         threat_score = -1
 
