@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from geoip_helper import ensure_geoip_up_to_date, enrich_with_geoip
 from nn_helper import compute_nn_score, load_model_and_scaler
-from stopforumspam_helper import ensure_sfs_up_to_date
+from stopforumspam_helper import ensure_sfs_up_to_date, ip_in_toxic_list
 from db_helper import db_health_check, record_login_with_scores
 
 load_dotenv()
@@ -45,14 +45,30 @@ def score_endpoint():
         enriched["username"] = username
         enriched["device_uuid"] = device_uuid
 
+        # Compute the neural network score
         if PASSTHROUGH_MODE:
             nn_score = -1
         else:
             nn_score = compute_nn_score(username, enriched)
 
-        ip_risk_score = -1
+        # Compute the IP risk score
+        if ip_in_toxic_list(client_ip):
+            ip_risk_score = 1.0
+        else:
+            ip_risk_score = 0.0
+
+        # Ensemble the two scores
+        NN_WEIGHT = 0.8
+        IP_WEIGHT = 0.2
+
+        # If less than 0, we're in passthrough mode
+        if nn_score < 0:
+            threat_score = ip_risk_score
+        else:
+            threat_score = (NN_WEIGHT * nn_score) + (IP_WEIGHT * ip_risk_score)
+
         impossible_travel = -1
-        threat_score = -1
+        threat_score = max(0.0, min(threat_score, 1.0))
 
         # Insert into DB
         login_id = record_login_with_scores(
