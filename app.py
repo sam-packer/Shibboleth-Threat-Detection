@@ -4,6 +4,8 @@ import random
 
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+
+from ensembler import ensemble_threat_score
 from geoip_helper import ensure_geoip_up_to_date, enrich_with_geoip
 from nn_helper import compute_nn_score, load_model_and_scaler
 from stopforumspam_helper import ensure_sfs_up_to_date, ip_in_toxic_list
@@ -45,29 +47,11 @@ def score_endpoint():
         enriched["username"] = username
         enriched["device_uuid"] = device_uuid
 
-        # Compute the neural network score
-        if PASSTHROUGH_MODE:
-            nn_score = -1
-        else:
-            nn_score = compute_nn_score(username, enriched)
-
-        # Compute the IP risk score
+        nn_score = compute_nn_score(username, enriched)
         ip_risk_score = 1.0 if ip_in_toxic_list(client_ip) else 0.0
-
-        # Escalation only ensemble (never depresses the NN)
-        if nn_score < 0:
-            threat_score = ip_risk_score  # passthrough mode
-        else:
-            base = nn_score
-            # If IP is toxic, bump risk instead of averaging
-            if ip_risk_score >= 1.0:
-                # linear bump that caps at 1.0
-                threat_score = min(1.0, base + 0.25 * (1.0 - base))
-            else:
-                threat_score = base
-
         impossible_travel = -1
-        threat_score = max(0.0, min(threat_score, 1.0))
+
+        threat_score = ensemble_threat_score(nn_score, ip_risk_score, PASSTHROUGH_MODE)
 
         # Insert into DB
         login_id = record_login_with_scores(
