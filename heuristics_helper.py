@@ -7,6 +7,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
 from datetime import datetime
 
+from globals import FEATURE_COLUMNS
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
 
@@ -16,23 +18,34 @@ if not POSTGRES_CONNECTION_STRING:
 
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
 
-FEATURE_COLUMNS = [
-    "focus_changes", "blur_events", "click_count", "key_count",
-    "avg_key_delay_ms", "pointer_distance_px", "pointer_event_count",
-    "scroll_distance_px", "scroll_event_count", "dom_ready_ms",
-    "time_to_first_key_ms", "time_to_first_click_ms", "idle_time_total_ms",
-    "input_focus_count", "paste_events", "resize_events"
-]
-
 # Weight features by their discriminative power for anomaly detection
 FEATURE_WEIGHTS = {
-    "click_count": 1.5,
-    "key_count": 1.5,
-    "avg_key_delay_ms": 2.0,  # Typing speed is very personal
-    "pointer_distance_px": 1.2,
-    "idle_time_total_ms": 1.0,
-    "time_to_first_key_ms": 1.3,
-    "time_to_first_click_ms": 1.3,
+    # Highly discriminative - typing patterns are very personal
+    "avg_key_delay_ms": 2.0,  # Typing speed/rhythm is unique per person
+
+    # Strong discriminators - interaction patterns
+    "active_time_ms": 1.8,  # Bots rush or have unnatural timing
+    "total_session_time_ms": 1.7,  # Overall session duration patterns
+    "click_count": 1.5,  # Click patterns vary by user
+    "key_count": 1.5,  # Different users type different amounts
+
+    # Moderate discriminators - timing signals
+    "idle_time_total_ms": 1.4,  # Pauses are behavioral (now at 500ms threshold)
+    "time_to_first_key_ms": 1.3,  # Hesitation/reaction time
+    "time_to_first_click_ms": 1.3,  # Initial engagement timing
+    "pointer_distance_px": 1.2,  # Mouse movement patterns
+
+    # Weaker but useful - interaction details
+    "paste_events": 1.2,  # Credential stuffing often uses paste
+    "pointer_event_count": 1.0,
+    "input_focus_count": 1.0,
+
+    # Context features - less discriminative but still useful
+    "focus_changes": 0.8,
+    "blur_events": 0.8,
+    "scroll_distance_px": 0.7,
+    "scroll_event_count": 0.7,
+    "resize_events": 0.6,
     # Other features get default weight of 1.0
 }
 
@@ -261,7 +274,7 @@ def score_against_population(login_row: dict, percentiles: dict) -> tuple[float,
     return float(np.clip(risk, 0.0, 1.0)), feature_details
 
 
-def create_detailed_report(output_file: str = None) -> str:
+def create_detailed_report(output_file: str = None) -> str | None:
     """
     Generate comprehensive Excel report with multiple sheets for transparency.
 

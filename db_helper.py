@@ -19,7 +19,7 @@ ALLOWED_JSON_COLUMNS = {
     "click_count", "key_count", "avg_key_delay_ms", "pointer_distance_px",
     "pointer_event_count", "scroll_distance_px", "scroll_event_count",
     "dom_ready_ms", "time_to_first_key_ms", "time_to_first_click_ms",
-    "idle_time_total_ms", "input_focus_count", "paste_events",
+    "idle_time_total_ms", "total_session_time_ms", "active_time_ms", "input_focus_count", "paste_events",
     "resize_events", "tz_offset_min", "language", "platform",
     "device_memory_gb", "hardware_concurrency", "screen_width_px",
     "screen_height_px", "pixel_ratio", "color_depth", "touch_support",
@@ -92,9 +92,10 @@ def insert_rba_scores(
     final_score = final_score if final_score is not None else nn_score
 
     sql = text("""
-        INSERT INTO rba_scores (login_id, username, nn_score, ip_risk_score, impossible_travel, final_score, created_at)
-        VALUES (:login_id, :username, :nn_score, :ip_risk_score, :impossible_travel, :final_score, :created_at)
-    """)
+               INSERT INTO rba_scores (login_id, username, nn_score, ip_risk_score, impossible_travel, final_score,
+                                       created_at)
+               VALUES (:login_id, :username, :nn_score, :ip_risk_score, :impossible_travel, :final_score, :created_at)
+               """)
 
     params = {
         "login_id": login_id,

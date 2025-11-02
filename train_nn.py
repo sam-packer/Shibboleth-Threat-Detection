@@ -11,6 +11,7 @@ from torch import nn
 import joblib
 
 from ensembler import ensemble_threat_score
+from globals import FEATURE_COLUMNS
 from model import SimpleRBAModel
 from nn_helper import get_best_device
 
@@ -19,17 +20,6 @@ load_dotenv()
 POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
 _device = get_best_device()
-
-FEATURE_COLUMNS = [
-    "focus_changes", "blur_events", "click_count", "key_count",
-    "avg_key_delay_ms", "pointer_distance_px", "pointer_event_count",
-    "scroll_distance_px", "scroll_event_count", "dom_ready_ms",
-    "time_to_first_key_ms", "time_to_first_click_ms", "idle_time_total_ms",
-    "input_focus_count", "paste_events", "resize_events",
-    "tz_offset_min", "device_memory_gb", "hardware_concurrency",
-    "screen_width_px", "screen_height_px", "pixel_ratio", "color_depth",
-    "touch_support", "webauthn_supported"
-]
 
 
 def load_training_data(limit: int = 10000):

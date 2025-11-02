@@ -6,6 +6,8 @@ import joblib
 import pandas as pd
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
+
+from globals import FEATURE_COLUMNS
 from model import SimpleRBAModel
 from sklearn.preprocessing import StandardScaler
 
@@ -16,17 +18,6 @@ POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 MODEL_PATH = os.getenv("NN_MODEL_PATH", "best_rba_model.pt")
 SCALER_PATH = os.getenv("NN_SCALER_PATH", "rba_scaler.pkl")
 USER_THRESHOLD = int(os.getenv("NN_MIN_LOGINS", 10))
-
-FEATURE_COLUMNS = [
-    "focus_changes", "blur_events", "click_count", "key_count",
-    "avg_key_delay_ms", "pointer_distance_px", "pointer_event_count",
-    "scroll_distance_px", "scroll_event_count", "dom_ready_ms",
-    "time_to_first_key_ms", "time_to_first_click_ms", "idle_time_total_ms",
-    "input_focus_count", "paste_events", "resize_events",
-    "tz_offset_min", "device_memory_gb", "hardware_concurrency",
-    "screen_width_px", "screen_height_px", "pixel_ratio", "color_depth",
-    "touch_support", "webauthn_supported"
-]
 
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
 
