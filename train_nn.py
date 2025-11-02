@@ -89,10 +89,7 @@ def preprocess_training_data(df):
     true_labels = df["is_true_threat"].values
 
     # Split sets
-    X_train, X_val, \
-        y_train, y_val, \
-        user_train, user_val, \
-        true_labels_train, true_labels_val = train_test_split(
+    X_train, X_val, y_train, y_val, user_train, user_val, true_labels_train, true_labels_val = train_test_split(
         X, y, user_ids, true_labels, test_size=0.5, random_state=41, stratify=true_labels
     )
 
