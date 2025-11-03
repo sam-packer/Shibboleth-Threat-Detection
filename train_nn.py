@@ -80,8 +80,8 @@ def preprocess_training_data(df):
 
     # Normalize numeric features
     scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_val_scaled = scaler.transform(X_val)
+    X_train_scaled = scaler.fit_transform(X_train.values)
+    X_val_scaled = scaler.transform(X_val.values)
 
     # Convert to tensors
     X_train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32)
