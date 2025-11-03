@@ -72,7 +72,7 @@ def insert_login_event_from_json(
 
     try:
         with engine.begin() as conn:
-            result = conn.execute(sql, params)
+            result = conn.execute(sql, sanitized_params)
             login_id = result.scalar_one()
             return login_id
     except SQLAlchemyError as e:
