@@ -11,6 +11,7 @@ from torch import nn
 import joblib
 
 from ensembler import ensemble_threat_score
+from feature_preprocessor import FeaturePreprocessor
 from globals import FEATURE_COLUMNS
 from model import SimpleRBAModel
 from nn_helper import get_best_device
@@ -27,7 +28,7 @@ def load_training_data(limit: int = 10000):
     Fetch training data from rba_login_event.
     """
     query = text(f"""
-        SELECT username, {', '.join(FEATURE_COLUMNS)}, nn_score, human_verified
+        SELECT username, {', '.join(FEATURE_COLUMNS)}, nn_score, platform, human_verified, impossible_travel
         FROM rba_login_event
         WHERE nn_score >= 0.0
         ORDER BY random()
@@ -43,37 +44,21 @@ def load_training_data(limit: int = 10000):
             print("Warning: 'human_verified' column not found. Defaulting to False.")
             df['human_verified'] = False
 
+        # Ensure impossible_travel is boolean and fill NaNs
+        if 'impossible_travel' in df.columns:
+            df['impossible_travel'] = df['impossible_travel'].fillna(False).astype(bool)
+        else:
+            print("Warning: 'impossible_travel' column not found. Defaulting to False.")
+            df['impossible_travel'] = False
+
     print(f"Loaded {len(df)} rows.")
     return df
 
 
 def preprocess_training_data(df):
-    # Handle device_memory_gb imputations
-    if "device_memory_gb" in df.columns and "platform" in df.columns:
-        missing_mask = df["device_memory_gb"].isna()
-
-        win_mask = missing_mask & df["platform"].str.contains("Win", case=False, na=False)
-        if win_mask.any():
-            win_mean = df.loc[df["platform"].str.contains("Win", case=False, na=False), "device_memory_gb"].mean()
-            df.loc[win_mask, "device_memory_gb"] = win_mean
-            print(f"Imputed {win_mask.sum()} Windows rows with mean {win_mean:.2f} GB")
-
-        iphone_mask = missing_mask & df["platform"].str.contains("iPhone", case=False, na=False)
-        if iphone_mask.any():
-            iphone_mode = df.loc[df["platform"].str.contains("iPhone", case=False, na=False), "device_memory_gb"].mode()
-            if not iphone_mode.empty:
-                df.loc[iphone_mask, "device_memory_gb"] = iphone_mode.iloc[0]
-                print(f"Imputed {iphone_mask.sum()} iPhone rows with mode {iphone_mode.iloc[0]:.2f} GB")
-
-        remaining = df["device_memory_gb"].isna().sum()
-        if remaining > 0:
-            median_val = df["device_memory_gb"].median()
-            df["device_memory_gb"].fillna(median_val, inplace=True)
-            print(f"⚙️ Imputed {remaining} remaining rows with median {median_val:.2f} GB")
-
-    for col in FEATURE_COLUMNS:
-        if df[col].isna().any():
-            df[col].fillna(df[col].median(), inplace=True)
+    preprocessor = FeaturePreprocessor()
+    preprocessor.fit(df, FEATURE_COLUMNS)
+    df = preprocessor.transform_df(df, FEATURE_COLUMNS)
 
     # Encode usernames into numeric IDs for the embedding layer
     unique_users = df["username"].unique()
@@ -85,7 +70,7 @@ def preprocess_training_data(df):
     y = df["nn_score"].astype(np.float32)
     user_ids = df["user_id"].astype(np.int64)  # embedding indices must be int64
 
-    df['is_true_threat'] = ((df['nn_score'] == 1.0) & (df['human_verified'] == True)).astype(int)
+    df['is_true_threat'] = ((df['nn_score'] == 1.0) & (df['human_verified'] == True) & (df['impossible_travel'] == True)).astype(int)
     true_labels = df["is_true_threat"].values
 
     # Split sets
@@ -113,7 +98,7 @@ def preprocess_training_data(df):
 
     return (
         X_train_tensor, X_val_tensor, y_train_tensor, y_val_tensor, user_train_tensor, user_val_tensor, true_labels_val,
-        scaler, num_users
+        scaler, num_users, user_to_id, preprocessor
     )
 
 
@@ -131,7 +116,7 @@ def train_neural_network(
     print(f"Using embedding dimension = {embed_dim} for {num_users} users.")
 
     model = SimpleRBAModel(input_dim=input_dim, num_users=num_users, embed_dim=embed_dim).to(_device)
-    criterion = nn.MSELoss()
+    criterion = nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     X_train = X_train.to(_device)
@@ -182,7 +167,7 @@ def train_neural_network(
     return model
 
 
-def find_best_threshold(model, X_val, y_val, user_val, ip_flags=None):
+def find_best_threshold(model, X_val, true_labels, user_val, ip_flags=None):
     model.eval()
     with torch.no_grad():
         X_val_dev = X_val.to(_device)
@@ -201,27 +186,29 @@ def find_best_threshold(model, X_val, y_val, user_val, ip_flags=None):
 
     # sweep thresholds to find best F1 (or other metric)
     thresholds = np.linspace(0.0, 1.0, 201)
-    f1_scores = []
 
+    f1_scores = []
     for t in thresholds:
         preds_bin = (ensemble_preds >= t).astype(int)
-        f1_scores.append(f1_score(y_val, preds_bin))
+        f1_scores.append(f1_score(true_labels, preds_bin))
 
     best_idx = int(np.argmax(f1_scores))
     best_t = thresholds[best_idx]
     best_f1 = f1_scores[best_idx]
 
-    print(f"✅ Best threshold = {best_t:.3f} (F1 = {best_f1:.3f})")
+    print(f"Best threshold = {best_t:.3f} (F1 = {best_f1:.3f})")
     return best_t
 
 
 if __name__ == "__main__":
     df = load_training_data()
     (X_train, X_val, y_train, y_val, user_train, user_val, true_labels_val, scaler,
-     num_users) = preprocess_training_data(df)
+     num_users, user_to_id, preprocessor) = preprocess_training_data(df)
 
     model = train_neural_network(X_train, X_val, y_train, y_val, user_train, user_val, num_users)
     joblib.dump(scaler, "rba_scaler.pkl")
+    joblib.dump(user_to_id, "rba_user_map.pkl")
+    joblib.dump(preprocessor, "rba_preprocessor.pkl")
     print("Saved model as rba_model.pt and scaler as rba_scaler.pkl")
     best_threshold = find_best_threshold(model, X_val, true_labels_val, user_val)
     print(f"Recommended threshold for Shibboleth plugin: {best_threshold:.3f}")

@@ -7,6 +7,7 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
+from feature_preprocessor import FeaturePreprocessor
 from globals import FEATURE_COLUMNS
 from model import SimpleRBAModel
 from sklearn.preprocessing import StandardScaler
@@ -18,8 +19,11 @@ POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 MODEL_PATH = os.getenv("NN_MODEL_PATH", "best_rba_model.pt")
 SCALER_PATH = os.getenv("NN_SCALER_PATH", "rba_scaler.pkl")
 USER_THRESHOLD = int(os.getenv("NN_MIN_LOGINS", 10))
+USER_MAP_PATH = os.getenv("NN_USER_MAP_PATH", "rba_user_map.pkl")
+PREPROCESSOR_PATH = os.getenv("NN_PREPROCESSOR_PATH", "rba_preprocessor.pkl")
 
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
+
 
 def get_best_device():
     """
@@ -40,12 +44,14 @@ def get_best_device():
         logging.info("[NN] Using CPU backend")
     return dev
 
+
 _device = get_best_device()
 _model = None
 _scaler: StandardScaler | None = None
 _user_to_id = {}
 _num_users = 0
 _embed_dim = 0
+_preprocessor: FeaturePreprocessor | None = None
 
 
 def load_model_and_scaler():
@@ -55,21 +61,43 @@ def load_model_and_scaler():
     global _model, _scaler, _user_to_id, _num_users, _embed_dim
 
     if _model is not None and _scaler is not None:
-        return  # already loaded
+        return
 
     logging.info("[NN] Loading model and scaler...")
 
-    _scaler = joblib.load(SCALER_PATH)
+    try:
+        _scaler = joblib.load(SCALER_PATH)
+    except FileNotFoundError:
+        logging.error(f"[NN] CRITICAL: Scaler file not found at {SCALER_PATH}")
+        return
 
-    # Fetch user mapping from DB (users seen in training)
-    with engine.connect() as conn:
-        df_users = pd.read_sql(text("SELECT DISTINCT username FROM rba_login_event WHERE nn_score >= 0.0"), conn)
-        _user_to_id = {u: i for i, u in enumerate(df_users["username"].tolist())}
-        _num_users = len(_user_to_id)
-        _embed_dim = int(min(max(np.log2(max(_num_users, 1)), 4), 64))
+    try:
+        _preprocessor = joblib.load(PREPROCESSOR_PATH)
+    except FileNotFoundError:
+        logging.error(f"[NN] CRITICAL: Preprocessor file not found at {PREPROCESSOR_PATH}")
+        return
+
+    try:
+        _user_to_id = joblib.load(USER_MAP_PATH)
+    except FileNotFoundError:
+        logging.error(f"[NN] CRITICAL: User map file not found at {USER_MAP_PATH}")
+        _user_to_id = {}
+
+    _num_users = len(_user_to_id)
+    if _num_users == 0:
+        logging.error("[NN] User map is empty or failed to load. Model cannot be initialized.")
+        return
+
+    _embed_dim = int(min(max(np.log2(_num_users), 4), 64))
 
     _model = SimpleRBAModel(input_dim=len(FEATURE_COLUMNS), num_users=_num_users, embed_dim=_embed_dim)
-    _model.load_state_dict(torch.load(MODEL_PATH, map_location=_device))
+    try:
+        _model.load_state_dict(torch.load(MODEL_PATH, map_location=_device))
+    except FileNotFoundError:
+        logging.error(f"[NN] CRITICAL: Model file not found at {MODEL_PATH}")
+        _model = None
+        return
+
     _model.eval()
     logging.info(f"[NN] Model ready. Users: {_num_users} | Embed dim: {_embed_dim}")
 
@@ -82,10 +110,10 @@ def user_has_sufficient_data(username: str) -> bool:
         with engine.connect() as conn:
             result = conn.execute(
                 text("""
-                    SELECT COUNT(*) AS n
-                    FROM rba_login_event
-                    WHERE username = :username
-                """),
+                     SELECT COUNT(*) AS n
+                     FROM rba_login_event
+                     WHERE username = :username
+                     """),
                 {"username": username}
             ).fetchone()
 
@@ -104,12 +132,11 @@ def compute_nn_score(username: str, features: dict) -> float:
     try:
         load_model_and_scaler()
 
-        # Ensure all required features are present
-        missing = [col for col in FEATURE_COLUMNS if col not in features]
-        if missing:
-            logging.warning(f"[NN] Missing features: {missing}")
-            for col in missing:
-                features[col] = 0.0  # fallback safe default
+        if _model is None or _scaler is None or _preprocessor is None:
+            logging.error("[NN] Model/scaler/preprocessor not loaded. Returning neutral score.")
+            return 0.5
+
+        features = _preprocessor.transform_single(features, FEATURE_COLUMNS)
 
         # Prepare input tensor
         X = np.array([[features[col] for col in FEATURE_COLUMNS]], dtype=np.float32)
@@ -133,7 +160,7 @@ def compute_nn_score(username: str, features: dict) -> float:
 
     except Exception as e:
         logging.error(f"[NN] Inference failed: {e}", exc_info=True)
-        return 0.5  # safe neutral fallback
+        return 0.5
 
 
 def test_inference():
