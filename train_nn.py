@@ -67,11 +67,12 @@ def preprocess_training_data(df):
 
     # Prepare feature/target tensors
     X = df[FEATURE_COLUMNS].astype(np.float32)
-    y = df["is_true_threat"].astype(np.float32)
     user_ids = df["user_id"].astype(np.int64)  # embedding indices must be int64
 
     df['is_true_threat'] = ((df['nn_score'] == 1.0) & (df['human_verified'] == True) & (df['impossible_travel'] == True)).astype(int)
     true_labels = df["is_true_threat"].values
+
+    y = df["is_true_threat"].astype(np.float32)
 
     # Split sets
     X_train, X_val, y_train, y_val, user_train, user_val, true_labels_train, true_labels_val = train_test_split(
