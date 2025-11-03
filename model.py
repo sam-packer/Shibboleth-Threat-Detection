@@ -1,72 +1,38 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
-class RBAModel(nn.Module):
-    def __init__(self, vocab_sizes, embedding_dims, num_numerical_feats, hidden_dim=128, dropout_rate=0.5):
-        """
-        Initializes a flexible model that can handle any number of categorical and numerical features.
+class SimpleRBAModel(nn.Module):
+    def __init__(self, input_dim: int, num_users: int, embed_dim: int):
+        super(SimpleRBAModel, self).__init__()
 
-        Args:
-            vocab_sizes (dict): A dictionary mapping categorical feature names to their vocabulary size.
-                                e.g., {'username': 5000, 'Country': 250}
-            embedding_dims (dict): A dictionary mapping feature names to their desired embedding dimension.
-                                   Features not in this dict will get a default size of 10.
-            num_numerical_feats (int): The number of numerical features.
-            hidden_dim (int): The size of the hidden layer.
-            dropout_rate (float): The dropout rate for regularization.
-        """
-        super(RBAModel, self).__init__()
+        # This allows the neural network to learn the behavior for each user
+        # Rather than scoring based on general logins, we personalize it for each user
+        self.user_embed = nn.Embedding(num_users, embed_dim)
 
-        # --- Create Embedding Layers Dynamically ---
-        self.embeddings = nn.ModuleDict()
-        total_embedding_dim = 0
-        for col, size in vocab_sizes.items():
-            dim = embedding_dims.get(col, 10)
-            self.embeddings[col] = nn.Embedding(size, dim)
-            total_embedding_dim += dim
+        # 32 -> 16 -> 1 layers
+        # The 36 features will stay the same. As we add more rows, these numbers can be increased or potentially more layers added
+        self.fc1 = nn.Linear(input_dim + embed_dim, 32)
+        self.fc2 = nn.Linear(32, 16)
+        self.fc3 = nn.Linear(16, 1)
+        self.dropout = nn.Dropout(0.2)
 
-        # --- Fully Connected Layers with Batch Normalization for stability ---
-        input_dim = total_embedding_dim + num_numerical_feats
+    def forward(self, x: torch.Tensor, user_id: torch.Tensor | None = None) -> torch.Tensor:
+        if user_id is None:
+            # For an unknown user, use the global login data
+            user_vec = torch.zeros((x.size(0), self.user_embed.embedding_dim), device=x.device)
+        else:
+            # Otherwise, we can personalize based on the user
+            user_vec = self.user_embed(user_id)
 
-        self.fc1 = nn.Linear(input_dim, hidden_dim * 2)
-        self.bn1 = nn.BatchNorm1d(hidden_dim * 2)  # Batch Norm Layer
+        # Concatenates features and user embeddings
+        x = torch.cat([x, user_vec], dim=1)
 
-        self.fc2 = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.bn2 = nn.BatchNorm1d(hidden_dim)  # Batch Norm Layer
-
-        self.fc3 = nn.Linear(hidden_dim, 1)
-
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(dropout_rate)
-
-    def forward(self, x_categorical, x_numerical):
-        """
-        Forward pass through the network.
-
-        Args:
-            x_categorical (Tensor): A tensor of shape (batch_size, num_categorical_features)
-                                    containing integer indices for each categorical feature.
-            x_numerical (Tensor): A tensor of shape (batch_size, num_numerical_features)
-                                  containing the numerical feature values.
-        """
-        embedded_outputs = []
-        for i, col_name in enumerate(self.embeddings.keys()):
-            embedded_outputs.append(self.embeddings[col_name](x_categorical[:, i]))
-
-        # Concatenate all embedding outputs and the numerical features
-        x = torch.cat(embedded_outputs + [x_numerical], dim=1)
-
-        # Pass through the fully connected layers with activation, batch norm, and dropout
-        x = self.fc1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-
-        x = self.fc2(x)
-        x = self.bn2(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-
-        x = self.fc3(x)
+        # ReLU activation function for first layer
+        x = F.relu(self.fc1(x))
+        # Deactivate 20% of nodes on second layer so the neural network doesn't overfit
+        x = self.dropout(F.relu(self.fc2(x)))
+        # Third layer is the final layer, pass it through a sigmoid to give it a score of 0-1
+        x = torch.sigmoid(self.fc3(x))
         return x

@@ -1,0 +1,23 @@
+[project]
+name = "shibboleth-threat-detection"
+version = "2.0.0"
+description = "A risk based authentication implementation designed for Shibboleth IdP"
+requires-python = ">=3.14"
+dependencies = [
+    "flask>=3.1.2",
+    "geoip2>=5.1.0",
+    "joblib>=1.5.2",
+    "matplotlib>=3.10.7",
+    "numpy>=2.3.4",
+    "openpyxl>=3.1.5",
+    "pandas>=2.3.3",
+    "pandas-stubs==2.3.2.250926",
+    "psycopg2-binary>=2.9.11",
+    "python-dotenv>=1.2.1",
+    "requests>=2.32.5",
+    "scikit-learn>=1.7.2",
+    "scipy-stubs==1.16.3.0",
+    "sqlalchemy>=2.0.44",
+    "torch>=2.9.0",
+    "user-agents>=2.2.0",
+]

@@ -1,7 +1,9 @@
 .idea
 __pycache__
-*.pth
-*.zip
-*.json
-*.mmdb
+geoip_data
+stopforumspam_data
 .env
+*.xlsx
+*.pt
+*.pkl
+.DS_Store
