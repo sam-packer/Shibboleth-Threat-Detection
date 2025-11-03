@@ -58,8 +58,15 @@ def insert_login_event_from_json(
     params = {**base_fields, **behavioral_data, **nn_scores}
     params = {k: v for k, v in params.items() if v is not None}
 
-    columns = ", ".join(params.keys())
-    values = ", ".join([f":{k}" for k in params.keys()])
+    sanitized_params = {}
+    for k, v in params.items():
+        if hasattr(v, 'item'):
+            sanitized_params[k] = v.item()
+        else:
+            sanitized_params[k] = v
+
+    columns = ", ".join(sanitized_params.keys())
+    values = ", ".join([f":{k}" for k in sanitized_params.keys()])
 
     sql = text(f"INSERT INTO rba_login_event ({columns}) VALUES ({values}) RETURNING login_id")
 
@@ -100,10 +107,10 @@ def insert_rba_scores(
     params = {
         "login_id": login_id,
         "username": username,
-        "nn_score": nn_score,
-        "ip_risk_score": ip_risk_score,
-        "impossible_travel": impossible_travel,
-        "final_score": final_score,
+        "nn_score": nn_score.item() if hasattr(nn_score, 'item') else nn_score,
+        "ip_risk_score": ip_risk_score.item() if hasattr(ip_risk_score, 'item') else ip_risk_score,
+        "impossible_travel": impossible_travel.item() if hasattr(impossible_travel, 'item') else impossible_travel,
+        "final_score": final_score.item() if hasattr(final_score, 'item') else final_score,
         "created_at": datetime.now(timezone.utc),
     }
 
