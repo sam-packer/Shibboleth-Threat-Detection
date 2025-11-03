@@ -3,7 +3,6 @@ import logging
 import numpy as np
 import torch
 import joblib
-import pandas as pd
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
@@ -58,9 +57,9 @@ def load_model_and_scaler():
     """
     Load trained neural network, scaler, and user embedding metadata.
     """
-    global _model, _scaler, _user_to_id, _num_users, _embed_dim
+    global _model, _scaler, _user_to_id, _num_users, _embed_dim, _preprocessor
 
-    if _model is not None and _scaler is not None:
+    if _model is not None and _scaler is not None and _preprocessor is not None:
         return
 
     logging.info("[NN] Loading model and scaler...")
