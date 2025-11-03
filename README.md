@@ -54,8 +54,8 @@ provided, and you can simply execute them to create the tables with the correct 
 At first, you should run the project in passthrough mode. This is set in `.env` as `PASSTHROUGH_MODE=true|false`. This
 will always assign a score of -1 and allow the login. This will allow you ample time to collect data and tweak the
 heuristics script to ensure you have sufficient low risk logins. You'll also want to ensure you mark any known malicious
-logins as such by changing the `nn_score` to `1.0` **AND** setting `human_verified` to `true`. In the future, we plan to
-allow creating synthetic data, which should avoid you needing known malicious logins to start using this project.
+logins as such by changing the `nn_score` to `1.0` **AND** setting `human_verified` to `true`. You can use the
+`create_synthetic_data.py` script to create some synthetic data as well, so the neural network has something to "catch".
 
 ## Training the neural network
 
