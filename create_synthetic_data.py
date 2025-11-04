@@ -1,15 +1,3 @@
-#!/usr/bin/env python3
-"""
-Synthetic Malicious Login Data Generator for RBA System
-
-Generates realistic malicious login attempts with various attack patterns:
-- Bot/automated attacks (rushed, no idle time, perfect typing)
-- Credential stuffing (copy-paste patterns)
-- Account takeover attempts (behavioral anomalies)
-- Impossible travel scenarios
-- Browser automation patterns
-"""
-
 import os
 import random
 import logging
@@ -464,9 +452,6 @@ class SyntheticMaliciousDataGenerator:
                 ip_address = str(login['ip_address'])
                 device_uuid = str(login['device_uuid'])
 
-                # For malicious logins, set high risk scores
-                nn_score = login.get('nn_score', 1.0)  # Default to 1.0 (malicious)
-
                 # Calculate other risk scores based on the attack pattern
                 if login.get('impossible_travel', False):
                     impossible_travel_score = 1.0
@@ -490,9 +475,10 @@ class SyntheticMaliciousDataGenerator:
                 if login.get('impossible_travel', False) and random.random() < 0.9:
                     ip_risk_score = 1.0
 
-                # Calculate final score using ensemble function
-                # For synthetic malicious data, we know nn_score is 1.0
-                # The ensemble will escalate if IP is toxic
+                # For ground truth malicious logins, nn_score is ALWAYS 1.0
+                nn_score = 1.0  # Ground truth malicious
+
+                # Calculate final score using ensemble logic
                 if ip_risk_score >= 1.0:
                     # With nn_score=1.0 and toxic IP, ensemble adds 25% of remaining distance to 1.0
                     # Since we're already at 1.0, it stays at 1.0
@@ -501,25 +487,17 @@ class SyntheticMaliciousDataGenerator:
                     # With nn_score=1.0 and clean IP, score remains 1.0
                     final_score = 1.0
 
-                # However, for more realistic variation, let's sometimes have lower nn_scores
-                # for sophisticated attacks that might evade initial detection
-                if random.random() < 0.15:  # 15% of attacks are more sophisticated
-                    nn_score = random.uniform(0.7, 0.95)  # Lower confidence but still malicious
-                    if ip_risk_score >= 1.0:
-                        # Escalate 25% toward 1.0
-                        final_score = min(1.0, nn_score + 0.25 * (1.0 - nn_score))
-                    else:
-                        final_score = nn_score
-
-                # Prepare the behavioral data (everything except the fields we extracted)
+                # Prepare the behavioral data (everything except the special fields)
                 behavioral_data = {
                     k: v for k, v in login.items()
-                    if k not in ['username', 'ip_address', 'device_uuid', 'nn_score',
-                                 'event_timestamp', 'human_verified', 'impossible_travel']
+                    if k not in ['username', 'ip_address', 'device_uuid', 'nn_score']
                 }
 
                 # Set the metrics version
                 behavioral_data['metrics_version'] = 4
+
+                behavioral_data['human_verified'] = True  # Ground truth malicious
+                behavioral_data['impossible_travel'] = login.get('impossible_travel', False)
 
                 # Use the db_helper function to insert both login event and scores
                 login_id = record_login_with_scores(
