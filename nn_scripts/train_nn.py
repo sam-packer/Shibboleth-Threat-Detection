@@ -1,3 +1,4 @@
+import argparse
 import os
 import numpy as np
 import pandas as pd
@@ -12,9 +13,10 @@ import joblib
 
 from ensembler import ensemble_threat_score
 from feature_preprocessor import FeaturePreprocessor
-from globals import FEATURE_COLUMNS
+from helpers.globals import FEATURE_COLUMNS
 from model import SimpleRBAModel
 from nn_helper import get_best_device
+from helpers.shib_updater import update_shib_threshold
 
 # Load connection info
 load_dotenv()
@@ -105,7 +107,7 @@ def preprocess_training_data(df):
 
 def train_neural_network(
         X_train, X_val, y_train, y_val, user_train, user_val, num_users,
-        num_epochs=500, lr=1e-3, patience=5, checkpoint_path="best_rba_model.pt"
+        num_epochs=500, lr=1e-3, patience=5, checkpoint_path="../nn_data/best_rba_model.pt"
 ):
     """
     Train the personalized RBA model with user embeddings and early stopping.
@@ -202,14 +204,29 @@ def find_best_threshold(model, X_val, true_labels, user_val, ip_flags=None):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train the RBA model and find the best threshold.")
+    parser.add_argument(
+        '--update-shib',
+        type=str,
+        default=None,
+        help='Full path to the rba-beans.xml file to update with the new best threshold.'
+    )
+    args = parser.parse_args()
+
+    if not os.path.exists("../nn_data"):
+        os.mkdir("../nn_data")
+
     df = load_training_data()
     (X_train, X_val, y_train, y_val, user_train, user_val, true_labels_val, scaler,
      num_users, user_to_id, preprocessor) = preprocess_training_data(df)
 
     model = train_neural_network(X_train, X_val, y_train, y_val, user_train, user_val, num_users)
-    joblib.dump(scaler, "rba_scaler.pkl")
-    joblib.dump(user_to_id, "rba_user_map.pkl")
-    joblib.dump(preprocessor, "rba_preprocessor.pkl")
-    print("Saved model as rba_model.pt and scaler as rba_scaler.pkl")
+    joblib.dump(scaler, "../nn_data/rba_scaler.pkl")
+    joblib.dump(user_to_id, "../nn_data/rba_user_map.pkl")
+    joblib.dump(preprocessor, "../nn_data/rba_preprocessor.pkl")
+    print("Saved neural network files in the nn_data folder.")
     best_threshold = find_best_threshold(model, X_val, true_labels_val, user_val)
     print(f"Recommended threshold for Shibboleth plugin: {best_threshold:.3f}")
+
+    if args.update_shib:
+        update_shib_threshold(args.update_shib, best_threshold)

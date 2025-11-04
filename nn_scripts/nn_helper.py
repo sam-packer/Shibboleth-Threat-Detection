@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
 from feature_preprocessor import FeaturePreprocessor
-from globals import FEATURE_COLUMNS
+from helpers.globals import FEATURE_COLUMNS
 from model import SimpleRBAModel
 from sklearn.preprocessing import StandardScaler
 
@@ -15,11 +15,11 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
 
 POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
-MODEL_PATH = os.getenv("NN_MODEL_PATH", "best_rba_model.pt")
-SCALER_PATH = os.getenv("NN_SCALER_PATH", "rba_scaler.pkl")
+MODEL_PATH = os.getenv("NN_MODEL_PATH", "../nn_data/best_rba_model.pt")
+SCALER_PATH = os.getenv("NN_SCALER_PATH", "../nn_data/rba_scaler.pkl")
 USER_THRESHOLD = int(os.getenv("NN_MIN_LOGINS", 10))
-USER_MAP_PATH = os.getenv("NN_USER_MAP_PATH", "rba_user_map.pkl")
-PREPROCESSOR_PATH = os.getenv("NN_PREPROCESSOR_PATH", "rba_preprocessor.pkl")
+USER_MAP_PATH = os.getenv("NN_USER_MAP_PATH", "../nn_data/rba_user_map.pkl")
+PREPROCESSOR_PATH = os.getenv("NN_PREPROCESSOR_PATH", "../nn_data/rba_preprocessor.pkl")
 
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
 

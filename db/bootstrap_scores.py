@@ -7,7 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
 from datetime import datetime
 
-from globals import FEATURE_COLUMNS
+from helpers.globals import FEATURE_COLUMNS
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")

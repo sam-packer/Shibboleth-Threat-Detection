@@ -1,15 +1,14 @@
 import os
 import logging
-import random
 
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
-from ensembler import ensemble_threat_score
-from geoip_helper import ensure_geoip_up_to_date, enrich_with_geoip
-from nn_helper import compute_nn_score, load_model_and_scaler
-from stopforumspam_helper import ensure_sfs_up_to_date, ip_in_toxic_list
-from db_helper import db_health_check, record_login_with_scores
+from nn_scripts.ensembler import ensemble_threat_score
+from external_data.geoip_helper import ensure_geoip_up_to_date, enrich_with_geoip
+from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler
+from external_data.stopforumspam_helper import ensure_sfs_up_to_date, ip_in_toxic_list
+from db.db_helper import db_health_check, record_login_with_scores
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")

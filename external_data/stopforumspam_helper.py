@@ -2,14 +2,14 @@ import os
 import ipaddress
 import requests
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 # Load env
 load_dotenv()
 
 SFS_URL = "https://www.stopforumspam.com/downloads/toxic_ip_cidr.txt"
-SFS_DIR = Path(os.getenv("SFS_DIR", "./stopforumspam_data"))
+SFS_DIR = Path(os.getenv("SFS_DIR", "../stopforumspam_data"))
 SFS_FILE = SFS_DIR / "toxic_ip_cidr.txt"
 META_FILE = SFS_DIR / "metadata.txt"
 
@@ -57,7 +57,7 @@ def _needs_refresh() -> bool:
     except ValueError:
         return True
 
-    return datetime.utcnow() - last_update > timedelta(hours=REFRESH_INTERVAL_HOURS)
+    return datetime.now(timezone.utc) - last_update > timedelta(hours=REFRESH_INTERVAL_HOURS)
 
 
 def _download_list():

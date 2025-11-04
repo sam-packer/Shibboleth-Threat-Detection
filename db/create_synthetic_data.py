@@ -1,7 +1,6 @@
 import os
 import random
 import logging
-import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
@@ -11,7 +10,7 @@ import uuid
 from typing import Dict, List, Tuple, Optional
 
 # Import the db_helper functions
-from db_helper import record_login_with_scores, db_health_check
+from db.db_helper import record_login_with_scores, db_health_check
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
@@ -533,7 +532,6 @@ class SyntheticMaliciousDataGenerator:
 def main():
     """Main execution function"""
     import argparse
-    import sys
 
     parser = argparse.ArgumentParser(
         description="Generate synthetic malicious login data for RBA system training"
