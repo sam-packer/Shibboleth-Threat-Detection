@@ -21,3 +21,22 @@ dependencies = [
     "torch>=2.9.0",
     "user-agents>=2.2.0",
 ]
+
+[tool.uv]
+package = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nn_scripts*", "db*", "helpers*", "external_data*"]
+exclude = ["tests*", "seeds*", "geoip_data*", "stopforumspam_data*", "nn_data*"]
+
+[tool.poetry]
+packages = [
+    { include = "nn_scripts" },
+    { include = "db" },
+    { include = "helpers" },
+    { include = "external_data" },
+]
+
+[project.scripts]
+train = "nn_scripts.train_nn:main"
