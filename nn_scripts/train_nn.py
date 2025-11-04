@@ -11,11 +11,11 @@ from sklearn.preprocessing import StandardScaler
 from torch import nn
 import joblib
 
-from ensembler import ensemble_threat_score
+from nn_scripts.ensembler import ensemble_threat_score
 from feature_preprocessor import FeaturePreprocessor
 from helpers.globals import FEATURE_COLUMNS
-from model import SimpleRBAModel
-from nn_helper import get_best_device
+from nn_scripts.model import SimpleRBAModel
+from nn_scripts.nn_helper import get_best_device
 from helpers.shib_updater import update_shib_threshold
 
 # Load connection info

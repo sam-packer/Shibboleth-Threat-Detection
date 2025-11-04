@@ -6,10 +6,11 @@ import joblib
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
-from feature_preprocessor import FeaturePreprocessor
 from helpers.globals import FEATURE_COLUMNS
-from model import SimpleRBAModel
 from sklearn.preprocessing import StandardScaler
+
+from nn_scripts.feature_preprocessor import FeaturePreprocessor
+from nn_scripts.model import SimpleRBAModel
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
