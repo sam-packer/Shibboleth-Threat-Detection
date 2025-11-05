@@ -66,15 +66,57 @@ malicious logins.
 
 ## Running the API
 
-You'll want to run the Flask app (the uv command is: `uv run app.py`) and reverse proxy the endpoint with something such
-as Caddy. Then, configure the Shibboleth plugin to point to your endpoint. I highly recommend load balancing two
-instances of this application.
+### Development
 
-There is a PostgresSQL database requirement. It is sharded and should perform extremely well. You can scale it as much
-as you need and this project uses the Citus extension to do so. I recommend purging logins after a year (except
-malicious ones). Since this isn't time series data, there isn't a problem with having a cluster of older malicious
-logins while accumulating newer login data.
+In development settings, you can run a development server with the following command:
 
-Each time you start the Flask web server, it will check for updates from MaxMind and StopForumSpam for new files. If
+```shell
+uv run api
+```
+
+### Production
+
+In production settings, you'll want to use Gunicorn on macOS / Linux or Waitress on Windows. Luckily, this entire
+process is automated for you. To run the API in production, use the following command:
+
+```shell
+uv run api-prod
+```
+
+### Daemonizing
+
+A sample `systemd` script is provided for your convenience. Depending on your installation and where you choose to clone
+the project, you may need to change the paths. Hopefully you follow better practices than me and don't clone your
+projects in the root user's home folder. You can put this in `/etc/systemd/system/shib-predict.service`:
+
+```ini
+[Unit]
+Description = Shibboleth IdP RBA Prediction
+After = network.target
+
+[Service]
+User = root
+WorkingDirectory = /root/shib-predict
+ExecStart = /root/.local/bin/uv run api-prod
+Restart = always
+RestartSec = 5
+
+Environment = "PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy = multi-user.target
+```
+
+### Considerations
+
+You'll want to run the Flask app and reverse proxy the endpoint with something such as Caddy. Then, configure the
+Shibboleth plugin to point to your endpoint. I highly recommend load balancing two instances of this application.
+
+There is a PostgresSQL database requirement. It is very easy to shard the database with Citus and what I recommend. This
+will perform extremely well. You can scale it as much as you need depending on how active your Shibboleth IdP instance
+is. I recommend purging logins after a year (except malicious or human verified ones). Since this isn't time series
+data, there isn't a problem with having a cluster of older malicious logins while accumulating newer login data.
+
+Each time you start the web application, it will check for updates from MaxMind and StopForumSpam for new files. If
 they are found, they will automatically be downloaded. It will also try and connect to the database and run a simple
 query. This is called a "preflight check" and confirms your environment is set up correctly.
