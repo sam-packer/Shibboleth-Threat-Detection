@@ -74,9 +74,13 @@ def score_endpoint():
         return jsonify({"error": "Internal server error"}), 500
 
 
-if __name__ == "__main__":
+def main():
     if preflight():
         port = int(os.getenv("PORT", 5001))
         debug_mode = os.getenv("FLASK_DEBUG", "false").lower() == "true"
         logging.info(f"Starting Flask on 127.0.0.1:{port}, debug={debug_mode}")
         app.run(host="127.0.0.1", port=port, debug=debug_mode)
+
+
+if __name__ == "__main__":
+    main()

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SFS_URL = "https://www.stopforumspam.com/downloads/toxic_ip_cidr.txt"
-SFS_DIR = Path(os.getenv("SFS_DIR", "../stopforumspam_data"))
+SFS_DIR = Path(os.getenv("SFS_DIR", "stopforumspam_data"))
 SFS_FILE = SFS_DIR / "toxic_ip_cidr.txt"
 META_FILE = SFS_DIR / "metadata.txt"
 
@@ -54,10 +54,14 @@ def _needs_refresh() -> bool:
 
     try:
         last_update = datetime.fromisoformat(last_update_str)
+        if last_update.tzinfo is None:
+            last_update = last_update.replace(tzinfo=timezone.utc)
     except ValueError:
         return True
 
-    return datetime.now(timezone.utc) - last_update > timedelta(hours=REFRESH_INTERVAL_HOURS)
+    now_utc = datetime.now(timezone.utc)
+    return now_utc - last_update > timedelta(hours=REFRESH_INTERVAL_HOURS)
+
 
 
 def _download_list():

@@ -6,6 +6,7 @@ requires-python = ">=3.14"
 dependencies = [
     "flask>=3.1.2",
     "geoip2>=5.1.0",
+    "gunicorn>=23.0.0",
     "joblib>=1.5.2",
     "matplotlib>=3.10.7",
     "numpy>=2.3.4",
@@ -20,6 +21,7 @@ dependencies = [
     "sqlalchemy>=2.0.44",
     "torch>=2.9.0",
     "user-agents>=2.2.0",
+    "waitress>=3.0.2",
 ]
 
 [tool.uv]
@@ -27,11 +29,12 @@ package = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["nn_scripts*", "db*", "helpers*", "external_data*"]
+include = ["web*", "nn_scripts*", "db*", "helpers*", "external_data*"]
 exclude = ["tests*", "seeds*", "geoip_data*", "stopforumspam_data*", "nn_data*"]
 
 [tool.poetry]
 packages = [
+    { include = "web" },
     { include = "nn_scripts" },
     { include = "db" },
     { include = "helpers" },
@@ -39,4 +42,6 @@ packages = [
 ]
 
 [project.scripts]
+api = "web.app:main"
+api-prod = "web.run_api:main"
 train = "nn_scripts.train_nn:main"
