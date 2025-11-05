@@ -71,7 +71,9 @@ def preprocess_training_data(df):
     X = df[FEATURE_COLUMNS].astype(np.float32)
     user_ids = df["user_id"].astype(np.int64)  # embedding indices must be int64
 
-    df['is_true_threat'] = ((df['nn_score'] == 1.0) & (df['human_verified'] == True) | (df['impossible_travel'] == True)).astype(int)
+    df['is_true_threat'] = (
+                (df['nn_score'] == 1.0) & (df['human_verified'] == True) | (df['impossible_travel'] == True)).astype(
+        int)
     true_labels = df["is_true_threat"].values
 
     y = df["is_true_threat"].astype(np.float32)
@@ -203,7 +205,7 @@ def find_best_threshold(model, X_val, true_labels, user_val, ip_flags=None):
     return best_t
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Train the RBA model and find the best threshold.")
     parser.add_argument(
         '--update-shib',
@@ -230,3 +232,7 @@ if __name__ == "__main__":
 
     if args.update_shib:
         update_shib_threshold(args.update_shib, best_threshold)
+
+
+if __name__ == "__main__":
+    main()
