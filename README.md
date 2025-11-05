@@ -1,10 +1,19 @@
 # Shibboleth Threat Detection
 
-A Flask webserver that uses a neural network to classify logins based on their risk level. This is the backend that
-takes data from Shibboleth IdP and will return the threat score.
+This is a risk-based authentication system designed for use with Shibboleth IdP. Behavioral data is collected and
+trained with a neural network. The neural network adapts scoring to each user's behavior and learns "how risky is this
+user's login compared to their previous logins". This is an important distinction from a neural network that learns how
+risky a user's login is compared to an average login, which is **not** the project's goal. The behavioral data is
+ensembled with other heuristics such as how risky an IP is and whether impossible travel occurred.
 
-You will need the [Shibboleth RBA Plugin](https://github.com/sam-packer/Shibboleth-RBA-Plugin) (also developed by me) as
-well for this to fully work.
+## Requirements
+
+- Shibboleth IdP with the RBA plugin
+- PostgresSQL 17
+- Python 3.14+
+- `uv`
+- Load balancer (recommended)
+- Server with CUDA or MPS support (recommended)
 
 ## Installation
 
@@ -49,6 +58,16 @@ should use the latest version.
 Look inside the `seeds` folder. The current version is `v4` and you should use that to seed your database. SQL files are
 provided, and you can simply execute them to create the tables with the correct schema.
 
+Sharding the database with Citus is incredibly easy and can be done as follows:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS citus;
+SELECT create_distributed_table('rba_device', 'device_uuid');
+SELECT create_distributed_table('rba_login_event', 'username');
+```
+
+You can then add worker nodes and set the shard count depending on how big your environment is.
+
 ## Bootstrapping data
 
 At first, you should run the project in passthrough mode. This is set in `.env` as `PASSTHROUGH_MODE=true|false`. This
@@ -62,7 +81,13 @@ logins as such by changing the `nn_score` to `1.0` **AND** setting `human_verifi
 It is recommended to use a NVIDIA GPU with CUDA or an Apple Silicon machine. Depending on how many rows you have,
 training could take a long time. You will want to run the `train_nn.py` file. At the end, you will see a threshold. You
 should set that as your IdP threshold in the Shibboleth plugin. That is the most effective threshold for catching
-malicious logins.
+malicious logins. You can automate this entire process by running this command:
+
+```shell
+uv run train --update-shib /opt/shibboleth-idp/flows/intercept/rba/rba-beans.xml
+```
+
+Then, restart your Shibboleth IdP server and the web application for the changes to apply.
 
 ## Running the API
 
@@ -109,8 +134,8 @@ WantedBy = multi-user.target
 
 ### Considerations
 
-You'll want to run the Flask app and reverse proxy the endpoint with something such as Caddy. Then, configure the
-Shibboleth plugin to point to your endpoint. I highly recommend load balancing two instances of this application.
+It is highly recommended to load balance this application with software such as Caddy. Then, configure the Shibboleth
+plugin to point to your load balanced endpoint.
 
 There is a PostgresSQL database requirement. It is very easy to shard the database with Citus and what I recommend. This
 will perform extremely well. You can scale it as much as you need depending on how active your Shibboleth IdP instance
@@ -118,5 +143,5 @@ is. I recommend purging logins after a year (except malicious or human verified 
 data, there isn't a problem with having a cluster of older malicious logins while accumulating newer login data.
 
 Each time you start the web application, it will check for updates from MaxMind and StopForumSpam for new files. If
-they are found, they will automatically be downloaded. It will also try and connect to the database and run a simple
+any are found, they will automatically be downloaded. It will also try and connect to the database and run a simple
 query. This is called a "preflight check" and confirms your environment is set up correctly.
