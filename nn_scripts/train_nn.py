@@ -12,7 +12,7 @@ from torch import nn
 import joblib
 
 from nn_scripts.ensembler import ensemble_threat_score
-from feature_preprocessor import FeaturePreprocessor
+from nn_scripts.feature_preprocessor import FeaturePreprocessor
 from helpers.globals import FEATURE_COLUMNS
 from nn_scripts.model import SimpleRBAModel
 from nn_scripts.nn_helper import get_best_device
