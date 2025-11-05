@@ -38,7 +38,7 @@ def main():
             "--bind", f"0.0.0.0:{port}",
             "--workers", str(os.getenv("GUNICORN_WORKERS", 2)),
             "--threads", str(os.getenv("GUNICORN_THREADS", 4)),
-            "app:app",
+            "web.app:app",
         ]
         subprocess.run(cmd, check=True)
 
