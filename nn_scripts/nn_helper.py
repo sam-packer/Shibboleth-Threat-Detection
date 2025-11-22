@@ -9,7 +9,7 @@ from mlflow import MlflowClient
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
-from helpers.globals import CONFIG, resolve_path, FEATURE_COLUMNS, select_device
+from helpers.globals import resolve_path, select_device, cfg
 from sklearn.preprocessing import StandardScaler
 
 from nn_scripts.feature_preprocessor import FeaturePreprocessor
@@ -22,34 +22,32 @@ POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 
 # File based environment
 MODEL_PATH = resolve_path("NN_MODEL_PATH",
-                          os.path.join(CONFIG["model"]["output_dir"], CONFIG["model"]["checkpoint"])
+                          os.path.join(cfg("model.output_dir"), cfg("model.checkpoint"))
                           )
 
 SCALER_PATH = resolve_path("NN_SCALER_PATH",
-                           os.path.join(CONFIG["preprocessing"]["output_dir"],
+                           os.path.join(cfg("model.output_dir"),
                                         CONFIG["preprocessing"]["artifacts"]["scaler"])
                            )
 
 USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH",
-                             os.path.join(CONFIG["preprocessing"]["output_dir"],
+                             os.path.join(cfg("model.output_dir"),
                                           CONFIG["preprocessing"]["artifacts"]["user_map"])
                              )
 
 PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH",
-                                 os.path.join(CONFIG["preprocessing"]["output_dir"],
+                                 os.path.join(cfg("model.output_dir"),
                                               CONFIG["preprocessing"]["artifacts"]["preprocessor"])
                                  )
-USER_THRESHOLD = CONFIG["model"]["min_user_events"]
+USER_THRESHOLD = cfg("model.min_user_events")
 
 # MLFlow environment
-MLFLOW_CFG = CONFIG["mlflow"]
-
-ENABLE_MLFLOW = MLFLOW_CFG["enable"]
-MLFLOW_TRACKING_URI = MLFLOW_CFG["tracking_uri"]
-MLFLOW_REGISTRY_URI = MLFLOW_CFG["registry_uri"]
-UC_CATALOG = MLFLOW_CFG["uc_catalog"]
-UC_SCHEMA = MLFLOW_CFG["uc_schema"]
-UC_MODEL_NAME = MLFLOW_CFG["uc_model_name"]
+ENABLE_MLFLOW = cfg("mlflow.enable")
+MLFLOW_TRACKING_URI = cfg("mlflow.tracking_uri")
+MLFLOW_REGISTRY_URI = cfg("mlflow.registry_uri")
+UC_CATALOG = cfg("mlflow.uc_catalog")
+UC_SCHEMA = cfg("mlflow.uc_schema")
+UC_MODEL_NAME = cfg("mlflow.uc_model_name")
 FULL_UC_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_MODEL_NAME}"
 
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
@@ -148,16 +146,18 @@ def _load_from_local():
         logging.error("[NN] User map is empty.")
         return
 
-    embed_cfg = CONFIG["model"]
+    embed_dim_scale = cfg("model.embed_dim_scale")
+    min_embed = cfg("model.min_embed_dim")
+    max_embed = cfg("model.max_embed_dim")
 
-    if embed_cfg["embed_dim_scale"] == "log2":
+    if embed_dim_scale == "log2":
         raw = np.log2(_num_users)
     else:
-        raw = embed_cfg["embed_dim_scale"]
+        raw = embed_dim_scale
 
-    _embed_dim = int(min(max(raw, embed_cfg["min_embed_dim"]), embed_cfg["max_embed_dim"]))
+    _embed_dim = int(min(max(raw, min_embed), max_embed))
 
-    _model = SimpleRBAModel(input_dim=len(FEATURE_COLUMNS), num_users=_num_users, embed_dim=_embed_dim)
+    _model = SimpleRBAModel(input_dim=len(cfg("data.feature_columns")), num_users=_num_users, embed_dim=_embed_dim)
     try:
         _model.load_state_dict(torch.load(MODEL_PATH, map_location=_device))
     except FileNotFoundError:
@@ -194,7 +194,7 @@ def user_has_sufficient_data(username: str) -> bool:
             result = conn.execute(
                 text(f"""
                      SELECT COUNT(*) AS n
-                     FROM {CONFIG["data"]["table"]}
+                     FROM {cfg("data.table")}
                      WHERE username = :username
                        AND nn_score >= 0.0
                      """),
@@ -220,10 +220,10 @@ def compute_nn_score(username: str, features: dict) -> float:
             logging.error("[NN] Model/scaler/preprocessor not loaded. Returning neutral score.")
             return 0.5
 
-        features = _preprocessor.transform_single(features, FEATURE_COLUMNS)
+        features = _preprocessor.transform_single(features, cfg("data.feature_columns"))
 
         # Prepare input tensor
-        X = np.array([[features[col] for col in FEATURE_COLUMNS]], dtype=np.float32)
+        X = np.array([[features[col] for col in cfg("data.feature_columns")]], dtype=np.float32)
         X_scaled = _scaler.transform(X)
         X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
 
@@ -251,7 +251,7 @@ def test_inference():
     """
     Local manual test utility.
     """
-    dummy_input = {col: np.random.rand() for col in FEATURE_COLUMNS}
+    dummy_input = {col: np.random.rand() for col in cfg("data.feature_columns")}
     score = compute_nn_score("demo_user", dummy_input)
     print(f"NN Score for demo_user: {score:.4f}")
 

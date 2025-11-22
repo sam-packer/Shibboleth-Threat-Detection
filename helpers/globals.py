@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import Any
 
 import torch
 import yaml
@@ -36,11 +37,70 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
-# load config globally for application
-CONFIG = load_config()
 
-# keep this variable for compatibility
-FEATURE_COLUMNS = CONFIG["data"]["feature_columns"]
+def _lookup_config_key(key: str):
+    """Internal helper: resolve a.b.c from CONFIG."""
+    parts = key.split(".")
+    node = load_config()
+
+    for p in parts:
+        if isinstance(node, dict) and p in node:
+            node = node[p]
+        else:
+            return None
+
+
+def cfg(key: str, default: Any = None) -> Any:
+    """
+    Unified configuration accessor.
+
+    Precedence:
+      1. Environment variable override:
+            key = "training.learning_rate"
+            ENV = TRAINING_LEARNING_RATE
+
+      2. Value from config.yml (nested lookup)
+
+      3. Default parameter
+
+    Supports: str, int, float, bool.
+    """
+
+    # 1. ENV override using upper snake case
+    env_key = key.replace(".", "_").upper()
+
+    if env_key in os.environ:
+        raw = os.environ[env_key]
+
+        # Type conversion based on config file type
+        # (only if config has that key)
+        cfg_val = _lookup_config_key(key)
+
+        if isinstance(cfg_val, bool):
+            return raw.lower() in ("1", "true", "yes", "on")
+
+        if isinstance(cfg_val, int):
+            try:
+                return int(raw)
+            except ValueError:
+                pass
+
+        if isinstance(cfg_val, float):
+            try:
+                return float(raw)
+            except ValueError:
+                pass
+
+        # fallback: treat as string
+        return raw
+
+    # 2. Fallback to config.yml
+    cfg_value = _lookup_config_key(key)
+    if cfg_value is not None:
+        return cfg_value
+
+    # 3. Fallback to provided default
+    return default
 
 
 def resolve_path(env_var_name: str, default_relative: str) -> str:
@@ -88,7 +148,7 @@ def select_device() -> torch.device:
       2. MPS  (Apple Silicon)
       3. CPU  (fallback)
     """
-    cfg_device = CONFIG["training"]["runtime"]["device"].lower()
+    cfg_device = cfg("training.runtime.device").lower()
 
     # config override
     if cfg_device != "auto":
