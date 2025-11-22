@@ -80,7 +80,7 @@ mlflow:
   registry_uri: "databricks-uc"
   experiment_path: "/Shared/Shibboleth RBA/rba_model_training"
   uc_catalog: "shibboleth_rba"
-  uc_schema: "shibboleth_rba"
+  uc_schema: "models"
   uc_model_name: "Shibboleth_RBA_Model"
   model_stage: "Staging"
 

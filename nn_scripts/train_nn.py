@@ -17,26 +17,62 @@ import joblib
 
 from nn_scripts.ensembler import ensemble_threat_score
 from nn_scripts.feature_preprocessor import FeaturePreprocessor
-from helpers.globals import FEATURE_COLUMNS, select_device
+from helpers.globals import CONFIG, select_device, resolve_path
 from nn_scripts.model import SimpleRBAModel
 from helpers.shib_updater import update_shib_threshold
 
-# Load connection info
 load_dotenv()
+
 POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
+
 _device = select_device()
 
-# Build the UC path for MLFlow
-ENABLE_MLFLOW = os.getenv("ENABLE_MLFLOW", "True").lower() == "true"
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI")
-MLFLOW_REGISTRY_URI = os.getenv("MLFLOW_REGISTRY_URI")
-MLFLOW_EXPERIMENT_PATH = os.getenv("MLFLOW_EXPERIMENT_PATH")
+# Config references
+FEATURE_COLUMNS = CONFIG["data"]["feature_columns"]
+TEST_SIZE = CONFIG["data"]["test_size"]
+RANDOM_STATE = CONFIG["data"]["random_state"]
+LIMIT = CONFIG["data"]["limit"]
 
-UC_CATALOG = os.getenv("UC_CATALOG")
-UC_SCHEMA = os.getenv("UC_SCHEMA")
-UC_MODEL_NAME = os.getenv("UC_MODEL_NAME")
+TRAINING_CFG = CONFIG["training"]
+MODEL_CFG = CONFIG["model"]
+PREPROC_CFG = CONFIG["preprocessing"]
+EVAL_CFG = CONFIG["evaluation"]["threshold_sweep"]
 
+MLFLOW_CFG = CONFIG["mlflow"]
+DEPLOY_CFG = CONFIG["deployment"]
+
+# Paths
+MODEL_PATH = resolve_path(
+    "NN_MODEL_PATH",
+    os.path.join(MODEL_CFG["output_dir"], MODEL_CFG["checkpoint"])
+)
+
+SCALER_PATH = resolve_path(
+    "NN_SCALER_PATH",
+    os.path.join(PREPROC_CFG["output_dir"], PREPROC_CFG["artifacts"]["scaler"])
+)
+
+USER_MAP_PATH = resolve_path(
+    "NN_USER_MAP_PATH",
+    os.path.join(PREPROC_CFG["output_dir"], PREPROC_CFG["artifacts"]["user_map"])
+)
+
+PREPROCESSOR_PATH = resolve_path(
+    "NN_PREPROCESSOR_PATH",
+    os.path.join(PREPROC_CFG["output_dir"], PREPROC_CFG["artifacts"]["preprocessor"])
+)
+
+# ------------------------------------------------------------------------------------
+# MLFlow Config
+# ------------------------------------------------------------------------------------
+ENABLE_MLFLOW = MLFLOW_CFG["enable"]
+MLFLOW_TRACKING_URI = MLFLOW_CFG["tracking_uri"]
+MLFLOW_REGISTRY_URI = MLFLOW_CFG["registry_uri"]
+MLFLOW_EXPERIMENT_PATH = MLFLOW_CFG["experiment_path"]
+UC_CATALOG = MLFLOW_CFG["uc_catalog"]
+UC_SCHEMA = MLFLOW_CFG["uc_schema"]
+UC_MODEL_NAME = MLFLOW_CFG["uc_model_name"]
 FULL_UC_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_MODEL_NAME}"
 
 if ENABLE_MLFLOW and not MLFLOW_EXPERIMENT_PATH:
@@ -50,13 +86,11 @@ if not ENABLE_MLFLOW:
     mlflow.set_experiment = lambda *args, **kwargs: None
 
 
-def load_training_data(limit: int = 10000):
-    """
-    Fetch training data from rba_login_event.
-    """
+def load_training_data(limit: int):
     query = text(f"""
-        SELECT username, {', '.join(FEATURE_COLUMNS)}, nn_score, platform, human_verified, impossible_travel
-        FROM rba_login_event
+        SELECT username, {', '.join(FEATURE_COLUMNS)}, nn_score, platform,
+               human_verified, impossible_travel
+        FROM {CONFIG["data"]["table"]}
         WHERE nn_score >= 0.0
         ORDER BY random()
         LIMIT :limit
@@ -64,19 +98,8 @@ def load_training_data(limit: int = 10000):
     with engine.connect() as conn:
         df = pd.read_sql(query, conn, params={"limit": limit})
 
-        # Ensure human_verified is boolean and fill NaNs
-        if 'human_verified' in df.columns:
-            df['human_verified'] = df['human_verified'].fillna(False).astype(bool)
-        else:
-            print("Warning: 'human_verified' column not found. Defaulting to False.")
-            df['human_verified'] = False
-
-        # Ensure impossible_travel is boolean and fill NaNs
-        if 'impossible_travel' in df.columns:
-            df['impossible_travel'] = df['impossible_travel'].fillna(False).astype(bool)
-        else:
-            print("Warning: 'impossible_travel' column not found. Defaulting to False.")
-            df['impossible_travel'] = False
+        df["human_verified"] = df.get("human_verified", False).fillna(False).astype(bool)
+        df["impossible_travel"] = df.get("impossible_travel", False).fillna(False).astype(bool)
 
         mlflow.log_param("source_query", str(query))
         mlflow.log_metric("n_rows", len(df))
@@ -96,19 +119,21 @@ def preprocess_training_data(df):
     df["user_id"] = df["username"].map(user_to_id)
 
     # Prepare feature/target tensors
-    X = df[FEATURE_COLUMNS].astype(np.float32)
-    user_ids = df["user_id"].astype(np.int64)  # embedding indices must be int64
+    df["is_true_threat"] = (
+            (df["nn_score"] == 1.0) & (df["human_verified"] == True)
+            | (df["impossible_travel"] == True)
+    ).astype(int)
 
-    df['is_true_threat'] = (
-            (df['nn_score'] == 1.0) & (df['human_verified'] == True) | (df['impossible_travel'] == True)).astype(
-        int)
+    X = df[FEATURE_COLUMNS].astype(np.float32)
+    y = df["is_true_threat"].astype(np.float32)
+    user_ids = df["user_id"].astype(np.int64)
     true_labels = df["is_true_threat"].values
 
-    y = df["is_true_threat"].astype(np.float32)
-
-    # Split sets
     X_train, X_val, y_train, y_val, user_train, user_val, true_labels_train, true_labels_val = train_test_split(
-        X, y, user_ids, true_labels, test_size=0.2, random_state=41, stratify=true_labels
+        X, y, user_ids, true_labels,
+        test_size=TEST_SIZE,
+        random_state=RANDOM_STATE,
+        stratify=true_labels
     )
 
     # Normalize numeric features
@@ -116,47 +141,35 @@ def preprocess_training_data(df):
     X_train_scaled = scaler.fit_transform(X_train.values)
     X_val_scaled = scaler.transform(X_val.values)
 
-    # Convert to tensors
-    X_train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32)
-    y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1)
-    user_train_tensor = torch.tensor(user_train.values, dtype=torch.long)
-
-    X_val_tensor = torch.tensor(X_val_scaled, dtype=torch.float32)
-    y_val_tensor = torch.tensor(y_val.values, dtype=torch.float32).unsqueeze(1)
-    user_val_tensor = torch.tensor(user_val.values, dtype=torch.long)
-
-    num_users = len(unique_users)
-    mlflow.log_param("num_users", num_users)
-    print(f"Preprocessing complete:")
-    print(f"\tTrain: {len(X_train)} rows | Val: {len(X_val)} rows | {X_train.shape[1]} features | {num_users} users")
-
+    # Convert to tensors and return
     return (
-        X_train_tensor, X_val_tensor, y_train_tensor, y_val_tensor, user_train_tensor, user_val_tensor, true_labels_val,
-        scaler, num_users, user_to_id, preprocessor
+        torch.tensor(X_train_scaled, dtype=torch.float32),
+        torch.tensor(X_val_scaled, dtype=torch.float32),
+        torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1),
+        torch.tensor(y_val.values, dtype=torch.float32).unsqueeze(1),
+        torch.tensor(user_train.values, dtype=torch.long),
+        torch.tensor(user_val.values, dtype=torch.long),
+        true_labels_val,
+        scaler,
+        len(unique_users),
+        user_to_id,
+        preprocessor,
     )
 
 
-def train_neural_network(
-        X_train, X_val, y_train, y_val, user_train, user_val, num_users,
-        num_epochs=500, lr=1e-3, patience=5, checkpoint_path="../nn_data/best_rba_model.pt"
-):
-    """
-    Train the personalized RBA model with user embeddings and early stopping.
-    Automatically saves the best model checkpoint (lowest validation loss).
-    """
-    input_dim = X_train.shape[1]
+def train_neural_network(X_train, X_val, y_train, y_val, user_train, user_val, num_users, checkpoint_path):
+    raw = np.log2(num_users) if MODEL_CFG["embed_dim_scale"] == "log2" else MODEL_CFG["embed_dim_scale"]
+    embed_dim = int(min(max(raw, MODEL_CFG["min_embed_dim"]), MODEL_CFG["max_embed_dim"]))
 
-    embed_dim = int(min(max(np.log2(num_users), 4), 64))
     mlflow.log_param("embed_dim", embed_dim)
-    print(f"Using embedding dimension = {embed_dim} for {num_users} users.")
+    mlflow.log_param("num_epochs", TRAINING_CFG["num_epochs"])
+    mlflow.log_param("learning_rate", TRAINING_CFG["learning_rate"])
+    mlflow.log_param("patience", TRAINING_CFG["patience"])
 
-    mlflow.log_param("num_epochs", num_epochs)
-    mlflow.log_param("learning_rate", lr)
-    mlflow.log_param("patience", patience)
+    model = SimpleRBAModel(input_dim=X_train.shape[1], num_users=num_users, embed_dim=embed_dim).to(_device)
 
-    model = SimpleRBAModel(input_dim=input_dim, num_users=num_users, embed_dim=embed_dim).to(_device)
     criterion = nn.BCELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=TRAINING_CFG["learning_rate"])
 
     X_train = X_train.to(_device)
     y_train = y_train.to(_device)
@@ -167,42 +180,31 @@ def train_neural_network(
 
     best_val_loss = float("inf")
     epochs_no_improve = 0
+    min_delta = TRAINING_CFG["min_delta"]
 
-    print(f"Starting training for up to {num_epochs} epochs...")
-
-    for epoch in range(num_epochs):
+    for epoch in range(TRAINING_CFG["num_epochs"]):
         model.train()
         optimizer.zero_grad()
-        outputs = model(X_train, user_train)
-        loss = criterion(outputs, y_train)
+
+        loss = criterion(model(X_train, user_train), y_train)
         loss.backward()
         optimizer.step()
 
         model.eval()
         with torch.no_grad():
-            val_outputs = model(X_val, user_val)
-            val_loss = criterion(val_outputs, y_val)
+            val_loss = criterion(model(X_val, user_val), y_val)
 
-        if val_loss.item() < best_val_loss - 1e-6:
+        mlflow.log_metric("train_loss", loss.item(), step=epoch)
+        mlflow.log_metric("val_loss", val_loss.item(), step=epoch)
+
+        if val_loss.item() < best_val_loss - min_delta:
             best_val_loss = val_loss.item()
             epochs_no_improve = 0
             torch.save(model.state_dict(), checkpoint_path)
         else:
             epochs_no_improve += 1
 
-        # Log every epoch to MLFlow
-        mlflow.log_metric("train_loss", loss.item(), step=epoch)
-        mlflow.log_metric("val_loss", val_loss.item(), step=epoch)
-
-        # Only print every 5 to the console
-        if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f"Epoch [{epoch + 1}/{num_epochs}] "
-                  f"Train Loss: {loss.item():.5f} | Val Loss: {val_loss.item():.5f} "
-                  f"| Patience: {epochs_no_improve}/{patience}")
-
-        if epochs_no_improve >= patience:
-            print(f"Early stopping after {epoch + 1} epochs "
-                  f"(best val loss = {best_val_loss:.5f}).")
+        if epochs_no_improve >= TRAINING_CFG["patience"]:
             break
 
     model.load_state_dict(torch.load(checkpoint_path, map_location=_device))
@@ -210,25 +212,24 @@ def train_neural_network(
     return model
 
 
-def find_best_threshold(model, X_val, true_labels, user_val, ip_flags=None):
+def find_best_threshold(model, X_val, true_labels, user_val):
     model.eval()
     with torch.no_grad():
-        X_val_dev = X_val.to(_device)
-        user_val_dev = user_val.to(_device)
-        nn_preds = model(X_val_dev, user_val_dev).cpu().numpy().flatten()
+        nn_preds = model(
+            X_val.to(_device),
+            user_val.to(_device)
+        ).cpu().numpy().flatten()
 
-    # default: all IPs clean
-    if ip_flags is None:
-        ip_flags = np.zeros_like(nn_preds)
-
-    # apply your real ensemble logic
     ensemble_preds = np.array([
-        ensemble_threat_score(nn, ip)
-        for nn, ip in zip(nn_preds, ip_flags)
+        ensemble_threat_score(nn, 0)
+        for nn in nn_preds
     ])
 
-    # sweep thresholds to find best F1 (or other metric)
-    thresholds = np.linspace(0.0, 1.0, 201)
+    thresholds = np.linspace(
+        EVAL_CFG["start"],
+        EVAL_CFG["end"],
+        EVAL_CFG["steps"]
+    )
 
     f1_scores = []
     for t in thresholds:
@@ -237,23 +238,14 @@ def find_best_threshold(model, X_val, true_labels, user_val, ip_flags=None):
 
     best_idx = int(np.argmax(f1_scores))
     best_t = thresholds[best_idx]
-    best_f1 = f1_scores[best_idx]
 
     mlflow.log_param("best_threshold", best_t)
-    mlflow.log_param("best_f1", best_f1)
-
-    print(f"Best threshold = {best_t:.3f} (F1 = {best_f1:.3f})")
-    return best_t, best_f1
+    return best_t, f1_scores[best_idx]
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train the RBA model and find the best threshold.")
-    parser.add_argument(
-        '--update-shib',
-        type=str,
-        default=None,
-        help='Full path to the rba-beans.xml file to update with the new best threshold.'
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--update-shib", type=str, default=None)
     args = parser.parse_args()
 
     if ENABLE_MLFLOW:
@@ -261,33 +253,46 @@ def main():
         mlflow.set_registry_uri(MLFLOW_REGISTRY_URI)
         mlflow.set_experiment(MLFLOW_EXPERIMENT_PATH)
         client = MlflowClient()
-
-        run_context = mlflow.start_run()
+        ctx = mlflow.start_run()
     else:
         client = None
-        run_context = nullcontext()
+        ctx = nullcontext()
 
+    with ctx:
+        df = load_training_data(LIMIT)
 
-    with run_context:
-        df = load_training_data()
-        (X_train, X_val, y_train, y_val, user_train, user_val, true_labels_val, scaler,
-         num_users, user_to_id, preprocessor) = preprocess_training_data(df)
+        (X_train, X_val, y_train, y_val,
+         user_train, user_val, true_labels_val,
+         scaler, num_users, user_to_id, preprocessor) = preprocess_training_data(df)
 
-        model = train_neural_network(X_train, X_val, y_train, y_val, user_train, user_val, num_users)
+        model = train_neural_network(
+            X_train, X_val, y_train, y_val,
+            user_train, user_val, num_users,
+            checkpoint_path=MODEL_PATH
+        )
 
-        # Save preprocessing artifacts
-        joblib.dump(scaler, "../nn_data/rba_scaler.pkl")
-        joblib.dump(user_to_id, "../nn_data/rba_user_map.pkl")
-        joblib.dump(preprocessor, "../nn_data/rba_preprocessor.pkl")
+        # Save artifacts
+        joblib.dump(scaler, SCALER_PATH)
+        joblib.dump(user_to_id, USER_MAP_PATH)
+        joblib.dump(preprocessor, PREPROCESSOR_PATH)
 
-        best_threshold, best_f1 = find_best_threshold(model, X_val, true_labels_val, user_val)
-        print(f"Recommended threshold for Shibboleth plugin: {best_threshold:.3f}")
+        best_threshold, best_f1 = find_best_threshold(
+            model, X_val, true_labels_val, user_val
+        )
+        print(f"Best threshold: {best_threshold:.3f}")
 
-        if args.update_shib:
-            update_shib_threshold(args.update_shib, best_threshold)
+        # Update Shibboleth via CLI or config
+        shib_path = (
+                args.update_shib
+                or (DEPLOY_CFG["shibboleth_path"] if DEPLOY_CFG["update_shibboleth"] else None)
+        )
 
+        if shib_path:
+            update_shib_threshold(shib_path, best_threshold)
+
+        # MLFlow model registration
         if ENABLE_MLFLOW:
-            mlflow.log_artifacts("../nn_data", artifact_path="artifacts")
+            mlflow.log_artifacts(PREPROC_CFG["output_dir"], artifact_path="artifacts")
 
             # Need this for the signature validation in MLFlow. It just gives MLFlow the shape of our data
             example_input = pd.DataFrame(
@@ -297,7 +302,7 @@ def main():
 
             model_info = mlflow.pytorch.log_model(
                 pytorch_model=model,
-                input_example=example_input,
+                input_example=example_input
             )
 
             try:
@@ -314,7 +319,7 @@ def main():
 
             versions = client.search_model_versions(f"name='{FULL_UC_MODEL_NAME}'")
             latest_version = max(int(v.version) for v in versions)
-            print(f"Model registered as: {FULL_UC_MODEL_NAME}, version={latest_version}")
+            print(f"Model registered: {FULL_UC_MODEL_NAME}, version={latest_version}")
 
 
 if __name__ == "__main__":

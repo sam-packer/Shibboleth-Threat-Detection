@@ -36,6 +36,13 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+# load config globally for application
+CONFIG = load_config()
+
+# keep this variable for compatibility
+FEATURE_COLUMNS = CONFIG["data"]["feature_columns"]
+
+
 def resolve_path(env_var_name: str, default_relative: str) -> str:
     """
     Resolve a relative or configured path safely.
@@ -81,7 +88,7 @@ def select_device() -> torch.device:
       2. MPS  (Apple Silicon)
       3. CPU  (fallback)
     """
-    cfg_device = CONFIG["runtime"]["device"].lower()
+    cfg_device = CONFIG["training"]["runtime"]["device"].lower()
 
     # config override
     if cfg_device != "auto":
@@ -117,10 +124,3 @@ def select_device() -> torch.device:
     dev = torch.device("cpu")
     logging.info("[NN] Auto-selected CPU device")
     return dev
-
-
-# load config globally for application
-CONFIG = load_config()
-
-# keep this variable for compatibility
-FEATURE_COLUMNS = CONFIG["data"]["feature_columns"]
