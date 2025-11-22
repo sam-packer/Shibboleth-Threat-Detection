@@ -36,6 +36,7 @@ data:
 
 preprocessing:
   output_dir: "../nn_data"
+
   # Concatenates with output_dir
   # Example: ../nn_data/rba_scaler.pkl
   artifacts:
@@ -46,11 +47,17 @@ preprocessing:
 model:
   output_dir: "../nn_data"
   checkpoint: "best_rba_model.pt"
+
   min_embed_dim: 4
   max_embed_dim: 64
   embed_dim_scale: log2
+
+  min_user_events: 10
+
   architecture:
     type: "SimpleRBAModel"
+    hidden_layers: [ 32, 16 ]
+    dropout: 0.2
 
 training:
   num_epochs: 500
@@ -66,9 +73,6 @@ evaluation:
     start: 0.0
     end: 1.0
     steps: 201
-
-  ensemble:
-    enabled: true
 
 mlflow:
   enable: true
@@ -93,6 +97,4 @@ api:
   log_level: "info"
   passthrough_mode: true
 
-meta:
-  config_version: "1"
-  project_name: "Shibboleth-RBA"
+config_version: "1"

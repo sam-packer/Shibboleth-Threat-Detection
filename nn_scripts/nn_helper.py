@@ -9,7 +9,7 @@ from mlflow import MlflowClient
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
-from helpers.globals import FEATURE_COLUMNS, resolve_path
+from helpers.globals import CONFIG, resolve_path, FEATURE_COLUMNS
 from sklearn.preprocessing import StandardScaler
 
 from nn_scripts.feature_preprocessor import FeaturePreprocessor
@@ -21,18 +21,32 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(
 POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 
 # File based environment
-MODEL_PATH = resolve_path("NN_MODEL_PATH", "nn_data/best_rba_model.pt")
-SCALER_PATH = resolve_path("NN_SCALER_PATH", "nn_data/rba_scaler.pkl")
-USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH", "nn_data/rba_user_map.pkl")
-PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH", "nn_data/rba_preprocessor.pkl")
-USER_THRESHOLD = int(os.getenv("NN_MIN_LOGINS", 10))
+MODEL_PATH = resolve_path("NN_MODEL_PATH",
+    os.path.join(CONFIG["model"]["output_dir"], CONFIG["model"]["checkpoint"])
+)
+
+SCALER_PATH = resolve_path("NN_SCALER_PATH",
+    os.path.join(CONFIG["preprocessing"]["output_dir"], CONFIG["preprocessing"]["artifacts"]["scaler"])
+)
+
+USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH",
+    os.path.join(CONFIG["preprocessing"]["output_dir"], CONFIG["preprocessing"]["artifacts"]["user_map"])
+)
+
+PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH",
+    os.path.join(CONFIG["preprocessing"]["output_dir"], CONFIG["preprocessing"]["artifacts"]["preprocessor"])
+)
+USER_THRESHOLD = CONFIG["model"]["min_user_events"]
 
 # MLFlow environment
-ENABLE_MLFLOW = os.getenv("ENABLE_MLFLOW", "True").lower() == "true"
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI")
-UC_CATALOG = os.getenv("UC_CATALOG")
-UC_SCHEMA = os.getenv("UC_SCHEMA")
-UC_MODEL_NAME = os.getenv("UC_MODEL_NAME")
+MLFLOW_CFG = CONFIG["mlflow"]
+
+ENABLE_MLFLOW = MLFLOW_CFG["enable"]
+MLFLOW_TRACKING_URI = MLFLOW_CFG["tracking_uri"]
+MLFLOW_REGISTRY_URI = MLFLOW_CFG["registry_uri"]
+UC_CATALOG = MLFLOW_CFG["uc_catalog"]
+UC_SCHEMA = MLFLOW_CFG["uc_schema"]
+UC_MODEL_NAME = MLFLOW_CFG["uc_model_name"]
 FULL_UC_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_MODEL_NAME}"
 
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
@@ -58,18 +72,32 @@ def get_best_device():
     return dev
 
 
-_device = get_best_device()
+runtime_device = CONFIG["runtime"]["device"]
+
+if runtime_device != "auto":
+    _device = torch.device(runtime_device)
+else:
+    _device = get_best_device()
+
 _model = None
 _scaler: StandardScaler | None = None
 _user_to_id = {}
 _num_users = 0
-_embed_dim = 0
+
+embed_cfg = CONFIG["model"]
+if embed_cfg["embed_dim_scale"] == "log2":
+    raw = np.log2(_num_users)
+else:
+    raw = embed_cfg["embed_dim_scale"]
+
+_embed_dim = int(min(max(raw, embed_cfg["min_embed_dim"]), embed_cfg["max_embed_dim"]))
+
 _preprocessor: FeaturePreprocessor | None = None
 
 
 def _load_from_mlflow():
     """
-    Attempts to load the Model and auxiliary artifacts from MLflow Registry.
+    Attempts to load the Model and auxiliary artifacts from MLFlow Registry.
     Returns True if successful, False otherwise.
     """
     global _model, _scaler, _user_to_id, _num_users, _preprocessor, _embed_dim
@@ -78,10 +106,10 @@ def _load_from_mlflow():
         return False
 
     if not MLFLOW_TRACKING_URI or not UC_MODEL_NAME:
-        logging.warning("[NN] MLflow enabled but URIs not set. Skipping MLflow load.")
+        logging.warning("[NN] MLFlow enabled but URIs not set. Skipping MLFlow load.")
         return False
 
-    logging.info(f"[NN] Attempting to load model '{FULL_UC_MODEL_NAME}' from MLflow...")
+    logging.info(f"[NN] Attempting to load model '{FULL_UC_MODEL_NAME}' from MLFlow...")
 
     try:
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
