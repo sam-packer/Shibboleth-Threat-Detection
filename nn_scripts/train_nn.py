@@ -161,15 +161,20 @@ def train_neural_network(X_train, X_val, y_train, y_val, user_train, user_val, n
     raw = np.log2(num_users) if MODEL_CFG["embed_dim_scale"] == "log2" else MODEL_CFG["embed_dim_scale"]
     embed_dim = int(min(max(raw, MODEL_CFG["min_embed_dim"]), MODEL_CFG["max_embed_dim"]))
 
+    min_delta = float(TRAINING_CFG["min_delta"])
+    num_epochs = int(TRAINING_CFG["num_epochs"])
+    learning_rate = float(TRAINING_CFG["learning_rate"])
+    patience = int(TRAINING_CFG["patience"])
+
     mlflow.log_param("embed_dim", embed_dim)
-    mlflow.log_param("num_epochs", TRAINING_CFG["num_epochs"])
-    mlflow.log_param("learning_rate", TRAINING_CFG["learning_rate"])
-    mlflow.log_param("patience", TRAINING_CFG["patience"])
+    mlflow.log_param("num_epochs", num_epochs)
+    mlflow.log_param("learning_rate", learning_rate)
+    mlflow.log_param("patience", patience)
 
     model = SimpleRBAModel(input_dim=X_train.shape[1], num_users=num_users, embed_dim=embed_dim).to(_device)
 
     criterion = nn.BCELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=TRAINING_CFG["learning_rate"])
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     X_train = X_train.to(_device)
     y_train = y_train.to(_device)
@@ -180,9 +185,10 @@ def train_neural_network(X_train, X_val, y_train, y_val, user_train, user_val, n
 
     best_val_loss = float("inf")
     epochs_no_improve = 0
-    min_delta = TRAINING_CFG["min_delta"]
 
-    for epoch in range(TRAINING_CFG["num_epochs"]):
+    print(f"Starting training for up to {num_epochs} epochs...")
+
+    for epoch in range(num_epochs):
         model.train()
         optimizer.zero_grad()
 
@@ -204,7 +210,15 @@ def train_neural_network(X_train, X_val, y_train, y_val, user_train, user_val, n
         else:
             epochs_no_improve += 1
 
-        if epochs_no_improve >= TRAINING_CFG["patience"]:
+        # Only print every 5 to the console
+        if (epoch + 1) % 5 == 0 or epoch == 0:
+            print(f"Epoch [{epoch + 1}/{num_epochs}] "
+                  f"Train Loss: {loss.item():.5f} | Val Loss: {val_loss.item():.5f} "
+                  f"| Patience: {epochs_no_improve}/{patience}")
+
+        if epochs_no_improve >= patience:
+            print(f"Early stopping after {epoch + 1} epochs "
+                  f"(best val loss = {best_val_loss:.5f}).")
             break
 
     model.load_state_dict(torch.load(checkpoint_path, map_location=_device))
@@ -317,16 +331,8 @@ def main():
                     name=FULL_UC_MODEL_NAME
                 )
 
-            model_stage = MLFLOW_CFG["model_stage"]
             versions = client.search_model_versions(f"name='{FULL_UC_MODEL_NAME}'")
             latest_version = max(int(v.version) for v in versions)
-
-            client.transition_model_version_stage(
-                name=FULL_UC_MODEL_NAME,
-                version=str(latest_version),
-                stage=model_stage,
-                archive_existing_versions=False
-            )
 
             print(f"Model registered: {FULL_UC_MODEL_NAME}, version={latest_version}")
 

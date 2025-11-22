@@ -34,17 +34,19 @@ data:
   random_state: 41
 
 preprocessing:
-  output_dir: "../nn_data"
+  output_dir: "nn_data"
 
   # Concatenates with output_dir
-  # Example: ../nn_data/rba_scaler.pkl
+  # Example: nn_data/rba_scaler.pkl
   artifacts:
     scaler: "rba_scaler.pkl"
     user_map: "rba_user_map.pkl"
     preprocessor: "rba_preprocessor.pkl"
 
 model:
-  output_dir: "../nn_data"
+  # Concatenates with output_dir
+  # Example: nn_data/best_rba_model.pt
+  output_dir: "nn_data"
   checkpoint: "best_rba_model.pt"
 
   min_embed_dim: 4
@@ -79,7 +81,6 @@ mlflow:
   uc_catalog: "shibboleth_rba"
   uc_schema: "models"
   uc_model_name: "Shibboleth_RBA_Model"
-  model_stage: "Staging"  # "Production" | "Staging"
 
 deployment:
   update_shibboleth: false
