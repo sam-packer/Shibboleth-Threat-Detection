@@ -163,3 +163,7 @@ data, there isn't a problem with having a cluster of older malicious logins whil
 Each time you start the web application, it will check for updates from MaxMind and StopForumSpam for new files. If
 any are found, they will automatically be downloaded. It will also try and connect to the database and run a simple
 query. This is called a "preflight check" and confirms your environment is set up correctly.
+
+---
+
+![ShibBlue Logo](assets/shibboleth%20blue.png)
