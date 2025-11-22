@@ -1,8 +1,12 @@
 import argparse
 import os
+from contextlib import nullcontext
+
+import mlflow
 import numpy as np
 import pandas as pd
 import torch
+from mlflow import MlflowClient
 from sklearn.metrics import f1_score
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
@@ -23,6 +27,28 @@ load_dotenv()
 POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
 _device = get_best_device()
+
+# Build the UC path for MLFlow
+ENABLE_MLFLOW = os.getenv("ENABLE_MLFLOW", "True").lower() == "true"
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI")
+MLFLOW_REGISTRY_URI = os.getenv("MLFLOW_REGISTRY_URI")
+MLFLOW_EXPERIMENT_PATH = os.getenv("MLFLOW_EXPERIMENT_PATH")
+
+UC_CATALOG = os.getenv("UC_CATALOG")
+UC_SCHEMA = os.getenv("UC_SCHEMA")
+UC_MODEL_NAME = os.getenv("UC_MODEL_NAME")
+
+FULL_UC_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_MODEL_NAME}"
+
+if ENABLE_MLFLOW and not MLFLOW_EXPERIMENT_PATH:
+    raise RuntimeError("ENABLE_MLFLOW is true, but MLFLOW_EXPERIMENT_PATH is not set.")
+
+if not ENABLE_MLFLOW:
+    print("MLFlow is disabled. Files will be saved locally only. Consider setting up MLFlow for reproducibility.")
+    mlflow.log_param = lambda *args, **kwargs: None
+    mlflow.log_metric = lambda *args, **kwargs: None
+    mlflow.log_artifacts = lambda *args, **kwargs: None
+    mlflow.set_experiment = lambda *args, **kwargs: None
 
 
 def load_training_data(limit: int = 10000):
@@ -53,6 +79,9 @@ def load_training_data(limit: int = 10000):
             print("Warning: 'impossible_travel' column not found. Defaulting to False.")
             df['impossible_travel'] = False
 
+        mlflow.log_param("source_query", str(query))
+        mlflow.log_metric("n_rows", len(df))
+
     print(f"Loaded {len(df)} rows.")
     return df
 
@@ -72,7 +101,7 @@ def preprocess_training_data(df):
     user_ids = df["user_id"].astype(np.int64)  # embedding indices must be int64
 
     df['is_true_threat'] = (
-                (df['nn_score'] == 1.0) & (df['human_verified'] == True) | (df['impossible_travel'] == True)).astype(
+            (df['nn_score'] == 1.0) & (df['human_verified'] == True) | (df['impossible_travel'] == True)).astype(
         int)
     true_labels = df["is_true_threat"].values
 
@@ -98,6 +127,7 @@ def preprocess_training_data(df):
     user_val_tensor = torch.tensor(user_val.values, dtype=torch.long)
 
     num_users = len(unique_users)
+    mlflow.log_param("num_users", num_users)
     print(f"Preprocessing complete:")
     print(f"\tTrain: {len(X_train)} rows | Val: {len(X_val)} rows | {X_train.shape[1]} features | {num_users} users")
 
@@ -118,7 +148,12 @@ def train_neural_network(
     input_dim = X_train.shape[1]
 
     embed_dim = int(min(max(np.log2(num_users), 4), 64))
+    mlflow.log_param("embed_dim", embed_dim)
     print(f"Using embedding dimension = {embed_dim} for {num_users} users.")
+
+    mlflow.log_param("num_epochs", num_epochs)
+    mlflow.log_param("learning_rate", lr)
+    mlflow.log_param("patience", patience)
 
     model = SimpleRBAModel(input_dim=input_dim, num_users=num_users, embed_dim=embed_dim).to(_device)
     criterion = nn.BCELoss()
@@ -153,10 +188,14 @@ def train_neural_network(
             best_val_loss = val_loss.item()
             epochs_no_improve = 0
             torch.save(model.state_dict(), checkpoint_path)
-            print(f"New best model saved at epoch {epoch + 1} (val_loss={best_val_loss:.5f})")
         else:
             epochs_no_improve += 1
 
+        # Log every epoch to MLFlow
+        mlflow.log_metric("train_loss", loss.item(), step=epoch)
+        mlflow.log_metric("val_loss", val_loss.item(), step=epoch)
+
+        # Only print every 5 to the console
         if (epoch + 1) % 5 == 0 or epoch == 0:
             print(f"Epoch [{epoch + 1}/{num_epochs}] "
                   f"Train Loss: {loss.item():.5f} | Val Loss: {val_loss.item():.5f} "
@@ -201,8 +240,11 @@ def find_best_threshold(model, X_val, true_labels, user_val, ip_flags=None):
     best_t = thresholds[best_idx]
     best_f1 = f1_scores[best_idx]
 
+    mlflow.log_param("best_threshold", best_t)
+    mlflow.log_param("best_f1", best_f1)
+
     print(f"Best threshold = {best_t:.3f} (F1 = {best_f1:.3f})")
-    return best_t
+    return best_t, best_f1
 
 
 def main():
@@ -215,23 +257,65 @@ def main():
     )
     args = parser.parse_args()
 
-    if not os.path.exists("../nn_data"):
-        os.mkdir("../nn_data")
+    if ENABLE_MLFLOW:
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_registry_uri(MLFLOW_REGISTRY_URI)
+        mlflow.set_experiment(MLFLOW_EXPERIMENT_PATH)
+        client = MlflowClient()
 
-    df = load_training_data()
-    (X_train, X_val, y_train, y_val, user_train, user_val, true_labels_val, scaler,
-     num_users, user_to_id, preprocessor) = preprocess_training_data(df)
+        run_context = mlflow.start_run()
+    else:
+        client = None
+        run_context = nullcontext()
 
-    model = train_neural_network(X_train, X_val, y_train, y_val, user_train, user_val, num_users)
-    joblib.dump(scaler, "../nn_data/rba_scaler.pkl")
-    joblib.dump(user_to_id, "../nn_data/rba_user_map.pkl")
-    joblib.dump(preprocessor, "../nn_data/rba_preprocessor.pkl")
-    print("Saved neural network files in the nn_data folder.")
-    best_threshold = find_best_threshold(model, X_val, true_labels_val, user_val)
-    print(f"Recommended threshold for Shibboleth plugin: {best_threshold:.3f}")
 
-    if args.update_shib:
-        update_shib_threshold(args.update_shib, best_threshold)
+    with run_context:
+        df = load_training_data()
+        (X_train, X_val, y_train, y_val, user_train, user_val, true_labels_val, scaler,
+         num_users, user_to_id, preprocessor) = preprocess_training_data(df)
+
+        model = train_neural_network(X_train, X_val, y_train, y_val, user_train, user_val, num_users)
+
+        # Save preprocessing artifacts
+        joblib.dump(scaler, "../nn_data/rba_scaler.pkl")
+        joblib.dump(user_to_id, "../nn_data/rba_user_map.pkl")
+        joblib.dump(preprocessor, "../nn_data/rba_preprocessor.pkl")
+
+        best_threshold, best_f1 = find_best_threshold(model, X_val, true_labels_val, user_val)
+        print(f"Recommended threshold for Shibboleth plugin: {best_threshold:.3f}")
+
+        if args.update_shib:
+            update_shib_threshold(args.update_shib, best_threshold)
+
+        if ENABLE_MLFLOW:
+            mlflow.log_artifacts("../nn_data", artifact_path="artifacts")
+
+            # Need this for the signature validation in MLFlow. It just gives MLFlow the shape of our data
+            example_input = pd.DataFrame(
+                [np.zeros(len(FEATURE_COLUMNS))],
+                columns=FEATURE_COLUMNS
+            )
+
+            model_info = mlflow.pytorch.log_model(
+                pytorch_model=model,
+                input_example=example_input,
+            )
+
+            try:
+                mlflow.register_model(
+                    model_uri=model_info.model_uri,
+                    name=FULL_UC_MODEL_NAME
+                )
+            except Exception:
+                client.create_registered_model(FULL_UC_MODEL_NAME)
+                mlflow.register_model(
+                    model_uri=model_info.model_uri,
+                    name=FULL_UC_MODEL_NAME
+                )
+
+            versions = client.search_model_versions(f"name='{FULL_UC_MODEL_NAME}'")
+            latest_version = max(int(v.version) for v in versions)
+            print(f"Model registered as: {FULL_UC_MODEL_NAME}, version={latest_version}")
 
 
 if __name__ == "__main__":

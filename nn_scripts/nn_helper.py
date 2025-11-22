@@ -1,12 +1,15 @@
 import os
 import logging
+
+import mlflow
 import numpy as np
 import torch
 import joblib
+from mlflow import MlflowClient
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
-from helpers.globals import FEATURE_COLUMNS
+from helpers.globals import FEATURE_COLUMNS, resolve_path
 from sklearn.preprocessing import StandardScaler
 
 from nn_scripts.feature_preprocessor import FeaturePreprocessor
@@ -16,11 +19,21 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
 
 POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
-MODEL_PATH = os.getenv("NN_MODEL_PATH", "../nn_data/best_rba_model.pt")
-SCALER_PATH = os.getenv("NN_SCALER_PATH", "../nn_data/rba_scaler.pkl")
+
+# File based environment
+MODEL_PATH = resolve_path("NN_MODEL_PATH", "nn_data/best_rba_model.pt")
+SCALER_PATH = resolve_path("NN_SCALER_PATH", "nn_data/rba_scaler.pkl")
+USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH", "nn_data/rba_user_map.pkl")
+PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH", "nn_data/rba_preprocessor.pkl")
 USER_THRESHOLD = int(os.getenv("NN_MIN_LOGINS", 10))
-USER_MAP_PATH = os.getenv("NN_USER_MAP_PATH", "../nn_data/rba_user_map.pkl")
-PREPROCESSOR_PATH = os.getenv("NN_PREPROCESSOR_PATH", "../nn_data/rba_preprocessor.pkl")
+
+# MLFlow environment
+ENABLE_MLFLOW = os.getenv("ENABLE_MLFLOW", "True").lower() == "true"
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI")
+UC_CATALOG = os.getenv("UC_CATALOG")
+UC_SCHEMA = os.getenv("UC_SCHEMA")
+UC_MODEL_NAME = os.getenv("UC_MODEL_NAME")
+FULL_UC_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_MODEL_NAME}"
 
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
 
@@ -54,38 +67,82 @@ _embed_dim = 0
 _preprocessor: FeaturePreprocessor | None = None
 
 
-def load_model_and_scaler():
+def _load_from_mlflow():
     """
-    Load trained neural network, scaler, and user embedding metadata.
+    Attempts to load the Model and auxiliary artifacts from MLflow Registry.
+    Returns True if successful, False otherwise.
     """
-    global _model, _scaler, _user_to_id, _num_users, _embed_dim, _preprocessor
+    global _model, _scaler, _user_to_id, _num_users, _preprocessor, _embed_dim
 
-    if _model is not None and _scaler is not None and _preprocessor is not None:
-        return
+    if not ENABLE_MLFLOW:
+        return False
 
-    logging.info("[NN] Loading model and scaler...")
+    if not MLFLOW_TRACKING_URI or not UC_MODEL_NAME:
+        logging.warning("[NN] MLflow enabled but URIs not set. Skipping MLflow load.")
+        return False
+
+    logging.info(f"[NN] Attempting to load model '{FULL_UC_MODEL_NAME}' from MLflow...")
+
+    try:
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        client = MlflowClient()
+
+        versions = client.search_model_versions(f"name='{FULL_UC_MODEL_NAME}'")
+        if not versions:
+            logging.warning(f"[NN] No versions found for {FULL_UC_MODEL_NAME} in MLFlow.")
+            return False
+
+        # sort by version number to get the latest
+        latest_version_obj = max(versions, key=lambda v: int(v.version))
+        run_id = latest_version_obj.run_id
+        version_num = latest_version_obj.version
+
+        logging.info(f"[NN] Found Version {version_num} (Run ID: {run_id})")
+
+        local_artifacts_dir = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="artifacts")
+
+        scaler_p = os.path.join(local_artifacts_dir, "rba_scaler.pkl")
+        preproc_p = os.path.join(local_artifacts_dir, "rba_preprocessor.pkl")
+        usermap_p = os.path.join(local_artifacts_dir, "rba_user_map.pkl")
+
+        _scaler = joblib.load(scaler_p)
+        _preprocessor = joblib.load(preproc_p)
+        _user_to_id = joblib.load(usermap_p)
+        _num_users = len(_user_to_id)
+
+        model_uri = f"models:/{FULL_UC_MODEL_NAME}/{version_num}"
+        loaded_model = mlflow.pytorch.load_model(model_uri, map_location=_device)
+
+        _model = loaded_model.to(_device)
+        _model.eval()
+
+        logging.info(f"[NN] Successfully loaded from MLFlow (Ver: {version_num}). Users: {_num_users}")
+        return True
+
+    except Exception as e:
+        logging.error(f"[NN] MLFlow load failed: {e}. Falling back to local files.")
+        return False
+
+
+def _load_from_local():
+    """
+    Falls back to loading from local file paths defined in .env.
+    """
+    global _model, _scaler, _user_to_id, _num_users, _preprocessor, _embed_dim
+
+    logging.info("[NN] Loading from local file system...")
 
     try:
         _scaler = joblib.load(SCALER_PATH)
-    except FileNotFoundError:
-        logging.error(f"[NN] CRITICAL: Scaler file not found at {SCALER_PATH}")
-        return
-
-    try:
         _preprocessor = joblib.load(PREPROCESSOR_PATH)
-    except FileNotFoundError:
-        logging.error(f"[NN] CRITICAL: Preprocessor file not found at {PREPROCESSOR_PATH}")
-        return
-
-    try:
         _user_to_id = joblib.load(USER_MAP_PATH)
-    except FileNotFoundError:
-        logging.error(f"[NN] CRITICAL: User map file not found at {USER_MAP_PATH}")
-        _user_to_id = {}
+    except FileNotFoundError as e:
+        logging.error(f"[NN] CRITICAL: Missing local artifact: {e}")
+        return
 
     _num_users = len(_user_to_id)
     if _num_users == 0:
-        logging.error("[NN] User map is empty or failed to load. Model cannot be initialized.")
+        logging.error("[NN] User map is empty.")
         return
 
     _embed_dim = int(min(max(np.log2(_num_users), 4), 64))
@@ -98,8 +155,24 @@ def load_model_and_scaler():
         _model = None
         return
 
+    _model.to(_device)
     _model.eval()
-    logging.info(f"[NN] Model ready. Users: {_num_users} | Embed dim: {_embed_dim}")
+    logging.info(f"[NN] Local model loaded. Users: {_num_users} | Embed dim: {_embed_dim}")
+
+
+def load_model_and_scaler():
+    """
+    Main entry point to load resources. Tries MLFlow first, then Local.
+    """
+    global _model, _scaler, _preprocessor
+
+    if _model is not None and _scaler is not None and _preprocessor is not None:
+        return
+
+    success = _load_from_mlflow()
+
+    if not success:
+        _load_from_local()
 
 
 def user_has_sufficient_data(username: str) -> bool:
