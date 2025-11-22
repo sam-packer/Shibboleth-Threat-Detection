@@ -12,7 +12,7 @@ ENV UV_LINK_MODE=copy
 # Explicitly set PORT to 8000 so run_api.py aligns with Caddy/Docker Compose
 ENV PORT=8000
 
-# --- ADD THIS HERE ---
+# Helps manage the dependency
 ENV UV_PYTHON_DOWNLOADS=never
 ENV UV_PYTHON=python3.11
 
