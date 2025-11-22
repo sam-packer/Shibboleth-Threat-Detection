@@ -1,0 +1,98 @@
+data:
+  limit: 10000
+  table: "rba_login_event"
+
+  feature_columns:
+    - focus_changes
+    - blur_events
+    - click_count
+    - key_count
+    - avg_key_delay_ms
+    - pointer_distance_px
+    - pointer_event_count
+    - scroll_distance_px
+    - scroll_event_count
+    - total_session_time_ms
+    - time_to_first_key_ms
+    - time_to_first_click_ms
+    - idle_time_total_ms
+    - input_focus_count
+    - paste_events
+    - resize_events
+    - active_time_ms
+    - tz_offset_min
+    - device_memory_gb
+    - hardware_concurrency
+    - screen_width_px
+    - screen_height_px
+    - pixel_ratio
+    - color_depth
+    - touch_support
+    - webauthn_supported
+
+  target_label: "is_true_threat"
+  test_size: 0.2
+  random_state: 41
+
+preprocessing:
+  output_dir: "../nn_data"
+  # Concatenates with output_dir
+  # Example: ../nn_data/rba_scaler.pkl
+  artifacts:
+    scaler: "rba_scaler.pkl"
+    user_map: "rba_user_map.pkl"
+    preprocessor: "rba_preprocessor.pkl"
+
+model:
+  output_dir: "../nn_data"
+  checkpoint: "best_rba_model.pt"
+  min_embed_dim: 4
+  max_embed_dim: 64
+  embed_dim_scale: log2
+  architecture:
+    type: "SimpleRBAModel"
+
+training:
+  num_epochs: 500
+  learning_rate: 0.001
+  patience: 5
+  min_delta: 1e-6
+  batch_size: null
+  runtime:
+    device: "auto"  # auto | cuda | mps | cpu
+
+evaluation:
+  threshold_sweep:
+    start: 0.0
+    end: 1.0
+    steps: 201
+
+  ensemble:
+    enabled: true
+
+mlflow:
+  enable: true
+  tracking_uri: "databricks"
+  registry_uri: "databricks-uc"
+  experiment_path: "/Shared/Shibboleth RBA/rba_model_training"
+  uc_catalog: "shibboleth_rba"
+  uc_schema: "shibboleth_rba"
+  uc_model_name: "Shibboleth_RBA_Model"
+  model_stage: "Staging"
+
+deployment:
+  update_shibboleth: false
+  shibboleth_path: "/opt/shibboleth-idp/flows/intercept/rba/rba-beans.xml"
+  backup_before_update: true
+  backup_suffix: ".bak"
+
+api:
+  host: "0.0.0.0"
+  port: 8080
+  workers: 4
+  log_level: "info"
+  passthrough_mode: true
+
+meta:
+  config_version: "1"
+  project_name: "Shibboleth-RBA"
