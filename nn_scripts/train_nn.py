@@ -317,8 +317,17 @@ def main():
                     name=FULL_UC_MODEL_NAME
                 )
 
+            model_stage = MLFLOW_CFG["model_stage"]
             versions = client.search_model_versions(f"name='{FULL_UC_MODEL_NAME}'")
             latest_version = max(int(v.version) for v in versions)
+
+            client.transition_model_version_stage(
+                name=FULL_UC_MODEL_NAME,
+                version=str(latest_version),
+                stage=model_stage,
+                archive_existing_versions=False
+            )
+
             print(f"Model registered: {FULL_UC_MODEL_NAME}, version={latest_version}")
 
 

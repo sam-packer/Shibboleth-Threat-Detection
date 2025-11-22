@@ -192,9 +192,9 @@ def user_has_sufficient_data(username: str) -> bool:
     try:
         with engine.connect() as conn:
             result = conn.execute(
-                text("""
+                text(f"""
                      SELECT COUNT(*) AS n
-                     FROM rba_login_event
+                     FROM {CONFIG["data"]["table"]}
                      WHERE username = :username
                        AND nn_score >= 0.0
                      """),

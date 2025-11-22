@@ -30,7 +30,6 @@ data:
     - touch_support
     - webauthn_supported
 
-  target_label: "is_true_threat"
   test_size: 0.2
   random_state: 41
 
@@ -55,7 +54,6 @@ model:
   min_user_events: 10
 
   architecture:
-    type: "SimpleRBAModel"
     hidden_layers: [ 32, 16 ]
     dropout: 0.2
 
@@ -64,7 +62,6 @@ training:
   learning_rate: 0.001
   patience: 5
   min_delta: 1e-6
-  batch_size: null
   runtime:
     device: "auto"  # auto | cuda | mps | cpu
 
@@ -82,7 +79,7 @@ mlflow:
   uc_catalog: "shibboleth_rba"
   uc_schema: "models"
   uc_model_name: "Shibboleth_RBA_Model"
-  model_stage: "Staging"
+  model_stage: "Staging"  # "Production" | "Staging"
 
 deployment:
   update_shibboleth: false
