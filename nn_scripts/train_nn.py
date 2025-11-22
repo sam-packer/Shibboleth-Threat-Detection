@@ -1,5 +1,6 @@
 import argparse
 import os
+from contextlib import nullcontext
 
 import mlflow
 import numpy as np
@@ -24,11 +25,11 @@ from helpers.shib_updater import update_shib_threshold
 # Load connection info
 load_dotenv()
 POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
-experiment_path = os.getenv("MLFLOW_EXPERIMENT_PATH")
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
 _device = get_best_device()
 
 # Build the UC path for MLFlow
+ENABLE_MLFLOW = os.getenv("ENABLE_MLFLOW", "True").lower() == "true"
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI")
 MLFLOW_REGISTRY_URI = os.getenv("MLFLOW_REGISTRY_URI")
 MLFLOW_EXPERIMENT_PATH = os.getenv("MLFLOW_EXPERIMENT_PATH")
@@ -39,8 +40,15 @@ UC_MODEL_NAME = os.getenv("UC_MODEL_NAME")
 
 FULL_UC_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_MODEL_NAME}"
 
-if not experiment_path:
-    raise RuntimeError("MLFLOW_EXPERIMENT_PATH is not set. Please configure it in your .env file.")
+if ENABLE_MLFLOW and not MLFLOW_EXPERIMENT_PATH:
+    raise RuntimeError("ENABLE_MLFLOW is true, but MLFLOW_EXPERIMENT_PATH is not set.")
+
+if not ENABLE_MLFLOW:
+    print("MLFlow is disabled. Files will be saved locally only. Consider setting up MLFlow for reproducibility.")
+    mlflow.log_param = lambda *args, **kwargs: None
+    mlflow.log_metric = lambda *args, **kwargs: None
+    mlflow.log_artifacts = lambda *args, **kwargs: None
+    mlflow.set_experiment = lambda *args, **kwargs: None
 
 
 def load_training_data(limit: int = 10000):
@@ -249,13 +257,19 @@ def main():
     )
     args = parser.parse_args()
 
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    mlflow.set_registry_uri(MLFLOW_REGISTRY_URI)
-    mlflow.set_experiment(MLFLOW_EXPERIMENT_PATH)
+    if ENABLE_MLFLOW:
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_registry_uri(MLFLOW_REGISTRY_URI)
+        mlflow.set_experiment(MLFLOW_EXPERIMENT_PATH)
+        client = MlflowClient()
 
-    client = MlflowClient()
+        run_context = mlflow.start_run()
+    else:
+        client = None
+        run_context = nullcontext()
 
-    with mlflow.start_run():
+
+    with run_context:
         df = load_training_data()
         (X_train, X_val, y_train, y_val, user_train, user_val, true_labels_val, scaler,
          num_users, user_to_id, preprocessor) = preprocess_training_data(df)
@@ -267,40 +281,41 @@ def main():
         joblib.dump(user_to_id, "../nn_data/rba_user_map.pkl")
         joblib.dump(preprocessor, "../nn_data/rba_preprocessor.pkl")
 
-        mlflow.log_artifacts("../nn_data", artifact_path="artifacts")
-
-        # Need this for the signature validation in MLFlow. It just gives MLFlow the shape of our data
-        example_input = pd.DataFrame(
-            [np.zeros(len(FEATURE_COLUMNS))],
-            columns=FEATURE_COLUMNS
-        )
-
-        model_info = mlflow.pytorch.log_model(
-            pytorch_model=model,
-            input_example=example_input,
-        )
-
-        try:
-            mlflow.register_model(
-                model_uri=model_info.model_uri,
-                name=FULL_UC_MODEL_NAME
-            )
-        except Exception:
-            client.create_registered_model(FULL_UC_MODEL_NAME)
-            mlflow.register_model(
-                model_uri=model_info.model_uri,
-                name=FULL_UC_MODEL_NAME
-            )
-
-        versions = client.search_model_versions(f"name='{FULL_UC_MODEL_NAME}'")
-        latest_version = max(int(v.version) for v in versions)
-        print(f"Model registered as: {FULL_UC_MODEL_NAME}, version={latest_version}")
-
         best_threshold, best_f1 = find_best_threshold(model, X_val, true_labels_val, user_val)
         print(f"Recommended threshold for Shibboleth plugin: {best_threshold:.3f}")
 
         if args.update_shib:
             update_shib_threshold(args.update_shib, best_threshold)
+
+        if ENABLE_MLFLOW:
+            mlflow.log_artifacts("../nn_data", artifact_path="artifacts")
+
+            # Need this for the signature validation in MLFlow. It just gives MLFlow the shape of our data
+            example_input = pd.DataFrame(
+                [np.zeros(len(FEATURE_COLUMNS))],
+                columns=FEATURE_COLUMNS
+            )
+
+            model_info = mlflow.pytorch.log_model(
+                pytorch_model=model,
+                input_example=example_input,
+            )
+
+            try:
+                mlflow.register_model(
+                    model_uri=model_info.model_uri,
+                    name=FULL_UC_MODEL_NAME
+                )
+            except Exception:
+                client.create_registered_model(FULL_UC_MODEL_NAME)
+                mlflow.register_model(
+                    model_uri=model_info.model_uri,
+                    name=FULL_UC_MODEL_NAME
+                )
+
+            versions = client.search_model_versions(f"name='{FULL_UC_MODEL_NAME}'")
+            latest_version = max(int(v.version) for v in versions)
+            print(f"Model registered as: {FULL_UC_MODEL_NAME}, version={latest_version}")
 
 
 if __name__ == "__main__":
