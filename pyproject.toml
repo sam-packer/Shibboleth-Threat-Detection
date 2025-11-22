@@ -9,6 +9,7 @@ dependencies = [
     "gunicorn",
     "joblib",
     "matplotlib",
+    "mlflow",
     "numpy",
     "openpyxl",
     "pandas",

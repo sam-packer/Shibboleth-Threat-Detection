@@ -8,7 +8,7 @@ ensembled with other heuristics such as how risky an IP is and whether impossibl
 
 ## Requirements
 
-- Shibboleth IdP with the RBA plugin
+- [Shibboleth IdP with the RBA plugin](https://github.com/sam-packer/Shibboleth-RBA-Plugin)
 - PostgresSQL 17
 - Python 3.14+
 - `uv`
@@ -36,8 +36,9 @@ source .venv/bin/activate     # macOS / Linux
 
 ### Environment setup
 
-Create a `.env` file and put a MaxMind License Key in. You can sign up [here](https://www.maxmind.com/en/home) and once
-you have an account, go to "Manage License Keys". Then, create a new key and put it in the environment file as follows:
+Copy the `.env.example` file and fill in the values. This involves putting in a MaxMind License Key in. You can sign
+up [here](https://www.maxmind.com/en/home) and once you have an account, go to "Manage License Keys". Then, create a new
+key and put it in the environment file as follows:
 
 ```dotenv
 MAXMIND_LICENSE_KEY=my_license_key
@@ -48,6 +49,23 @@ You'll also want to add a PostgresSQL connection string to the `.env` file. An e
 ```dotenv
 POSTGRES_CONNECTION_STRING=postgresql://your_username_here:your_password_here@127.0.0.1:5432/your_database_here
 ```
+
+#### Setting up MLFLow
+
+You will want to set up [MLFlow](https://mlflow.org/) for this project. The environment variables to use can mostly be
+left the same except for the host, token, and path. This uses the UC catalog, so you'll need to set up the schema. In
+MLFlow, go to New > Query and run this:
+
+```sql
+CREATE
+CATALOG shibboleth_rba;
+GRANT ALL PRIVILEGES ON CATALOG shibboleth_rba TO `your-user@domain.com`;
+
+CREATE SCHEMA shibboleth_rba.models;
+```
+
+All you'll need to do is create a personal access token and change the host. You should also created a new folder in
+your Shared workspace called "Shibboleth RBA".
 
 ### Seeding the database
 
