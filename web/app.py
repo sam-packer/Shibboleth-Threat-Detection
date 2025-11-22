@@ -1,4 +1,3 @@
-import os
 import logging
 
 from flask import Flask, request, jsonify
@@ -9,11 +8,17 @@ from external_data.geoip_helper import ensure_geoip_up_to_date, enrich_with_geoi
 from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler
 from external_data.stopforumspam_helper import ensure_sfs_up_to_date, ip_in_toxic_list
 from db.db_helper import db_health_check, record_login_with_scores
+from helpers.globals import CONFIG
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
 
-PASSTHROUGH_MODE = os.getenv("PASSTHROUGH_MODE", "true").lower() == "true"
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] %(message)s"
+)
+API_CFG = CONFIG["api"]
+
+PASSTHROUGH_MODE = API_CFG["passthrough_mode"]
 
 app = Flask(__name__)
 
@@ -76,10 +81,15 @@ def score_endpoint():
 
 def main():
     if preflight():
-        port = int(os.getenv("PORT", 5001))
-        debug_mode = os.getenv("FLASK_DEBUG", "false").lower() == "true"
-        logging.info(f"Starting Flask on 127.0.0.1:{port}, debug={debug_mode}")
-        app.run(host="127.0.0.1", port=port, debug=debug_mode)
+        host = API_CFG["host"]
+        port = API_CFG["port"]
+        debug_mode = False
+
+        logging.info(
+            f"Starting Flask on {host}:{port}, debug={debug_mode}, passthrough={PASSTHROUGH_MODE}"
+        )
+
+        app.run(host=host, port=port, debug=debug_mode)
 
 
 if __name__ == "__main__":

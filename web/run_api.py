@@ -3,6 +3,7 @@ import platform
 import logging
 import subprocess
 from web.app import app, preflight
+from helpers.globals import CONFIG
 
 
 def main():
@@ -11,11 +12,25 @@ def main():
         logging.error("Preflight checks failed! Aborting startup.")
         return
 
-    port = int(os.getenv("PORT", 5001))
+    API_CFG = CONFIG["api"]
+
+    host = API_CFG["host"]
+    port = API_CFG["port"]
+    workers = API_CFG.get("workers", 2)
+    threads = API_CFG.get("threads", 4)
+    log_level = API_CFG.get("log_level", "info")
+
     debug_mode = os.getenv("FLASK_DEBUG", "false").lower() == "true"
 
-    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
-    logging.info(f"Launching API on port {port} (debug={debug_mode})")
+    logging.basicConfig(
+        level=log_level.upper(),
+        format="[%(asctime)s] [%(levelname)s] %(message)s"
+    )
+
+    logging.info(
+        f"Launching API on {host}:{port} (debug={debug_mode}) "
+        f"workers={workers} threads={threads}"
+    )
 
     system = platform.system().lower()
 
@@ -28,16 +43,16 @@ def main():
             return
 
         logging.info("Using Waitress WSGI server (Windows mode)")
-        serve(app, host="0.0.0.0", port=port)
+        serve(app, host=host, port=port)
 
     # use gunicorn on linux
     else:
         logging.info("Using Gunicorn WSGI server (Unix mode)")
         cmd = [
             "gunicorn",
-            "--bind", f"0.0.0.0:{port}",
-            "--workers", str(os.getenv("GUNICORN_WORKERS", 2)),
-            "--threads", str(os.getenv("GUNICORN_THREADS", 4)),
+            "--bind", f"{host}:{port}",
+            "--workers", str(workers),
+            "--threads", str(threads),
             "web.app:app",
         ]
         subprocess.run(cmd, check=True)

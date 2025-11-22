@@ -91,10 +91,14 @@ deployment:
   backup_suffix: ".bak"
 
 api:
-  host: "0.0.0.0"
-  port: 8080
-  workers: 4
+  host: "127.0.0.1"
+  port: 5001
+
+  # Only configurable for Gunicorn on macOS / Linux
+  workers: 2
+  threads: 4
+
   log_level: "info"
-  passthrough_mode: true
+  passthrough_mode: false
 
 config_version: "1"
