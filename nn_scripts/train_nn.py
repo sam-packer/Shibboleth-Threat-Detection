@@ -17,16 +17,15 @@ import joblib
 
 from nn_scripts.ensembler import ensemble_threat_score
 from nn_scripts.feature_preprocessor import FeaturePreprocessor
-from helpers.globals import FEATURE_COLUMNS
+from helpers.globals import FEATURE_COLUMNS, select_device
 from nn_scripts.model import SimpleRBAModel
-from nn_scripts.nn_helper import get_best_device
 from helpers.shib_updater import update_shib_threshold
 
 # Load connection info
 load_dotenv()
 POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
-_device = get_best_device()
+_device = select_device()
 
 # Build the UC path for MLFlow
 ENABLE_MLFLOW = os.getenv("ENABLE_MLFLOW", "True").lower() == "true"

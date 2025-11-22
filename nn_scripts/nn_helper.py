@@ -9,7 +9,7 @@ from mlflow import MlflowClient
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
-from helpers.globals import CONFIG, resolve_path, FEATURE_COLUMNS
+from helpers.globals import CONFIG, resolve_path, FEATURE_COLUMNS, select_device
 from sklearn.preprocessing import StandardScaler
 
 from nn_scripts.feature_preprocessor import FeaturePreprocessor
@@ -22,20 +22,23 @@ POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 
 # File based environment
 MODEL_PATH = resolve_path("NN_MODEL_PATH",
-    os.path.join(CONFIG["model"]["output_dir"], CONFIG["model"]["checkpoint"])
-)
+                          os.path.join(CONFIG["model"]["output_dir"], CONFIG["model"]["checkpoint"])
+                          )
 
 SCALER_PATH = resolve_path("NN_SCALER_PATH",
-    os.path.join(CONFIG["preprocessing"]["output_dir"], CONFIG["preprocessing"]["artifacts"]["scaler"])
-)
+                           os.path.join(CONFIG["preprocessing"]["output_dir"],
+                                        CONFIG["preprocessing"]["artifacts"]["scaler"])
+                           )
 
 USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH",
-    os.path.join(CONFIG["preprocessing"]["output_dir"], CONFIG["preprocessing"]["artifacts"]["user_map"])
-)
+                             os.path.join(CONFIG["preprocessing"]["output_dir"],
+                                          CONFIG["preprocessing"]["artifacts"]["user_map"])
+                             )
 
 PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH",
-    os.path.join(CONFIG["preprocessing"]["output_dir"], CONFIG["preprocessing"]["artifacts"]["preprocessor"])
-)
+                                 os.path.join(CONFIG["preprocessing"]["output_dir"],
+                                              CONFIG["preprocessing"]["artifacts"]["preprocessor"])
+                                 )
 USER_THRESHOLD = CONFIG["model"]["min_user_events"]
 
 # MLFlow environment
@@ -51,47 +54,10 @@ FULL_UC_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_MODEL_NAME}"
 
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
 
-
-def get_best_device():
-    """
-    Choose the best available PyTorch device (CUDA, MPS, or CPU).
-    Priority order:
-      1. CUDA (NVIDIA GPUs)
-      2. MPS  (Apple Silicon / Metal)
-      3. CPU  (fallback)
-    """
-    if torch.cuda.is_available():
-        dev = torch.device("cuda")
-        logging.info(f"[NN] Using CUDA device: {torch.cuda.get_device_name(0)}")
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        dev = torch.device("mps")
-        logging.info("[NN] Using Apple MPS backend")
-    else:
-        dev = torch.device("cpu")
-        logging.info("[NN] Using CPU backend")
-    return dev
-
-
-runtime_device = CONFIG["runtime"]["device"]
-
-if runtime_device != "auto":
-    _device = torch.device(runtime_device)
-else:
-    _device = get_best_device()
-
+_device = select_device()
 _model = None
 _scaler: StandardScaler | None = None
 _user_to_id = {}
-_num_users = 0
-
-embed_cfg = CONFIG["model"]
-if embed_cfg["embed_dim_scale"] == "log2":
-    raw = np.log2(_num_users)
-else:
-    raw = embed_cfg["embed_dim_scale"]
-
-_embed_dim = int(min(max(raw, embed_cfg["min_embed_dim"]), embed_cfg["max_embed_dim"]))
-
 _preprocessor: FeaturePreprocessor | None = None
 
 
@@ -138,6 +104,15 @@ def _load_from_mlflow():
         _user_to_id = joblib.load(usermap_p)
         _num_users = len(_user_to_id)
 
+        embed_cfg = CONFIG["model"]
+
+        if embed_cfg["embed_dim_scale"] == "log2":
+            raw = np.log2(_num_users)
+        else:
+            raw = embed_cfg["embed_dim_scale"]
+
+        _embed_dim = int(min(max(raw, embed_cfg["min_embed_dim"]), embed_cfg["max_embed_dim"]))
+
         model_uri = f"models:/{FULL_UC_MODEL_NAME}/{version_num}"
         loaded_model = mlflow.pytorch.load_model(model_uri, map_location=_device)
 
@@ -173,7 +148,14 @@ def _load_from_local():
         logging.error("[NN] User map is empty.")
         return
 
-    _embed_dim = int(min(max(np.log2(_num_users), 4), 64))
+    embed_cfg = CONFIG["model"]
+
+    if embed_cfg["embed_dim_scale"] == "log2":
+        raw = np.log2(_num_users)
+    else:
+        raw = embed_cfg["embed_dim_scale"]
+
+    _embed_dim = int(min(max(raw, embed_cfg["min_embed_dim"]), embed_cfg["max_embed_dim"]))
 
     _model = SimpleRBAModel(input_dim=len(FEATURE_COLUMNS), num_users=_num_users, embed_dim=_embed_dim)
     try:

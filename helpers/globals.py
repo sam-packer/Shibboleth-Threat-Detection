@@ -1,4 +1,7 @@
+import logging
 import os
+
+import torch
 import yaml
 
 
@@ -61,6 +64,60 @@ def resolve_path(env_var_name: str, default_relative: str) -> str:
 
     # fallback to original string if directory doesn't exist
     return default_relative
+
+
+def select_device() -> torch.device:
+    """
+    Determine the correct PyTorch device using configuration + auto detection.
+
+    Config behavior:
+      - If CONFIG["runtime"]["device"] == "cpu" | "cuda" | "mps":
+            Try to use it. If unavailable, fall back to auto.
+      - If CONFIG["runtime"]["device"] == "auto":
+            Use the best available device.
+
+    Auto selection priority:
+      1. CUDA (NVIDIA)
+      2. MPS  (Apple Silicon)
+      3. CPU  (fallback)
+    """
+    cfg_device = CONFIG["runtime"]["device"].lower()
+
+    # config override
+    if cfg_device != "auto":
+        try:
+            dev = torch.device(cfg_device)
+
+            # validate availability
+            if cfg_device == "cuda" and not torch.cuda.is_available():
+                raise RuntimeError("CUDA requested, but no CUDA device is available.")
+
+            if cfg_device == "mps" and not (hasattr(torch.backends, "mps")
+                                            and torch.backends.mps.is_available()):
+                raise RuntimeError("MPS requested, but MPS is not available.")
+
+            logging.info(f"[NN] Using device from config: {cfg_device}")
+            return dev
+
+        except Exception as e:
+            logging.error(f"[NN] Config-selected device '{cfg_device}' unavailable: {e}")
+            logging.info("[NN] Falling back to auto device selection.")
+
+    # auto select
+    if torch.cuda.is_available():
+        dev = torch.device("cuda")
+        logging.info(f"[NN] Auto-selected CUDA device: {torch.cuda.get_device_name(0)}")
+        return dev
+
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        dev = torch.device("mps")
+        logging.info("[NN] Auto-selected MPS device (Apple Silicon)")
+        return dev
+
+    dev = torch.device("cpu")
+    logging.info("[NN] Auto-selected CPU device")
+    return dev
+
 
 # load config globally for application
 CONFIG = load_config()
