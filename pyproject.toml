@@ -2,7 +2,7 @@
 name = "shibboleth-threat-detection"
 version = "2.1.0"
 description = "A risk based authentication implementation designed for Shibboleth IdP"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 dependencies = [
     "flask",
     "geoip2",

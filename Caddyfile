@@ -1,0 +1,4 @@
+shib-predict.local {
+    tls internal
+    reverse_proxy python-app:8000
+}
