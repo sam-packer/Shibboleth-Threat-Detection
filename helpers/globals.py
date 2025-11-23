@@ -49,6 +49,7 @@ def _lookup_config_key(key: str):
         else:
             return None
 
+    return node
 
 def cfg(key: str, default: Any = None) -> Any:
     """
