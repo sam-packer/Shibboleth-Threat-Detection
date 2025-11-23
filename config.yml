@@ -1,7 +1,10 @@
 data:
+  # Max rows to load from the database
   limit: 10000
+  # Source table name in your database
   table: "rba_login_event"
 
+  # Input features the model learns from
   feature_columns:
     - focus_changes
     - blur_events
@@ -30,11 +33,15 @@ data:
     - touch_support
     - webauthn_supported
 
+  # Fraction of data held out for final evaluation
   test_size: 0.2
+  # Fraction of training data for hyperparameter tuning
   validation_size: 0.15
+  # Seed for reproducibility (same split every run)
   random_state: 41
 
 preprocessing:
+  # Directory to save preprocessing artifacts
   output_dir: "nn_data"
 
   # Concatenates with output_dir
@@ -46,59 +53,80 @@ preprocessing:
     threshold: "threshold.txt"
 
 model:
+  # Directory to save model artifacts
+  output_dir: "nn_data"
   # Concatenates with output_dir
   # Example: nn_data/best_rba_model.pt
-  output_dir: "nn_data"
   checkpoint: "best_rba_model.pt"
 
+  # Minimum size for user embedding vectors
   min_embed_dim: 4
+  # Maximum size for user embedding vectors
   max_embed_dim: 64
+  # How embedding size scales with user count
   embed_dim_scale: log2
-
+  # How many logins a user needs to have their own embedding
   min_user_events: 10
 
   architecture:
+    # Neurons per layer
     hidden_layers: [ 32, 16 ]
+    # Fraction of neurons randomly disabled during training
     dropout: 0.2
 
 training:
+  # Maximum training iterations over the full dataset
   num_epochs: 500
-  learning_rate: 0.001
+  # Step size for weight updates (too high = unstable, too low = slow)
+  learning_rate: 0.005
+  # Stop if no improvement for this many epochs
   patience: 5
+  # Minimum change to count as "improvement"
   min_delta: 1e-6
   runtime:
+    # Hardware to train on
     device: "auto"  # auto | cuda | mps | cpu
 
 evaluation:
   threshold_sweep:
+    # Lowest threshold to test
     start: 0.0
+    # Highest threshold to test
     end: 1.0
+    # Number of thresholds to evaluate between start and end
     steps: 201
 
 mlflow:
+  # Whether to log runs to MLFlow
   enable: true
+  # Where to send tracking data
   tracking_uri: "databricks"
+  # Where to register production models
   registry_uri: "databricks-uc"
+  # Experiment location
   experiment_path: "/Shared/Shibboleth RBA/rba_model_training"
+  # Unity Catalog name
   uc_catalog: "shibboleth_rba"
+  # Schema within the catalog
   uc_schema: "models"
+  # Registered model name
   uc_model_name: "Shibboleth_RBA_Model"
 
-deployment:
-  update_shibboleth: false
-  shibboleth_path: "/opt/shibboleth-idp/flows/intercept/rba/rba-beans.xml"
-  backup_before_update: true
-  backup_suffix: ".bak"
-
 api:
+  # IP address to bind to
   host: "127.0.0.1"
+  # Port number for the API
   port: 5001
 
-  # Only configurable for Gunicorn on macOS / Linux
+  # Note: Threads / workers are only configurable for Gunicorn on macOS / Linux
+  # Number of server processes (parallelism)
   workers: 2
+  # Threads per worker (concurrency)
   threads: 4
-
+  # Verbosity: debug, info, warning, error
   log_level: "info"
+  # Passthrough mode is used for collecting data so you can bootstrap and train your model
   passthrough_mode: false
 
+# Do not change
 config_version: "1"
