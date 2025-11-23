@@ -19,8 +19,6 @@ logging.basicConfig(
 
 PASSTHROUGH_MODE = cfg("api.passthrough_mode", False)
 
-app = Flask(__name__)
-
 
 def preflight():
     ensure_geoip_up_to_date()
@@ -28,6 +26,10 @@ def preflight():
     db_health_check()
     load_model_and_scaler()
     return True
+
+
+preflight()
+app = Flask(__name__)
 
 
 @app.route("/score", methods=["POST"])
