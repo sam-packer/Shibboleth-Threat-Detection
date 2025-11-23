@@ -241,10 +241,6 @@ def find_best_threshold(model, X_val, true_labels, user_val):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--update-shib", type=str, default=None)
-    args = parser.parse_args()
-
     if ENABLE_MLFLOW:
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
         mlflow.set_registry_uri(MLFLOW_REGISTRY_URI)
@@ -277,15 +273,6 @@ def main():
             model, X_val, true_labels_val, user_val
         )
         print(f"Best threshold: {best_threshold:.3f}")
-
-        # Update Shibboleth via CLI or config
-        shib_path = (
-                args.update_shib
-                or (cfg("deployment.shibboleth_path") if cfg("deployment.update_shibboleth") else None)
-        )
-
-        if shib_path:
-            update_shib_threshold(shib_path, best_threshold)
 
         # MLFlow model registration
         if ENABLE_MLFLOW:
