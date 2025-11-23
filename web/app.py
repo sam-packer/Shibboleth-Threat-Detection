@@ -28,7 +28,7 @@ def preflight():
     return True
 
 
-preflight()
+successful_start = preflight()
 app = Flask(__name__)
 
 
@@ -81,7 +81,7 @@ def score_endpoint():
 
 
 def main():
-    if preflight():
+    if successful_start:
         host = cfg("api.host")
         port = cfg("api.port")
         debug_mode = False
