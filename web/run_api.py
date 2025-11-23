@@ -16,7 +16,7 @@ def main():
     host = cfg("api.host")
     port = cfg("api.port")
     workers = cfg("api.workers", 2)
-    threads = cfg("api.threats", 4)
+    threads = cfg("api.threads", 4)
     log_level = cfg("api.log_level", "info")
 
     debug_mode = os.getenv("FLASK_DEBUG", "false").lower() == "true"
