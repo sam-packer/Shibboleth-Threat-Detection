@@ -1,5 +1,6 @@
 import logging
 import os
+from functools import lru_cache
 from typing import Any
 
 import torch
@@ -37,11 +38,15 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+@lru_cache(maxsize=1)
+def load_config_cached():
+    return load_config()
+
 
 def _lookup_config_key(key: str):
     """Internal helper: resolve a.b.c from CONFIG."""
     parts = key.split(".")
-    node = load_config()
+    node = load_config_cached()
 
     for p in parts:
         if isinstance(node, dict) and p in node:
@@ -50,6 +55,7 @@ def _lookup_config_key(key: str):
             return None
 
     return node
+
 
 def cfg(key: str, default: Any = None) -> Any:
     """
@@ -77,8 +83,14 @@ def cfg(key: str, default: Any = None) -> Any:
         # (only if config has that key)
         cfg_val = _lookup_config_key(key)
 
+        raw_l = raw.lower()
         if isinstance(cfg_val, bool):
-            return raw.lower() in ("1", "true", "yes", "on")
+            if raw_l in ("1", "true", "yes", "on"):
+                return True
+            if raw_l in ("0", "false", "no", "off"):
+                return False
+            logging.warning(f"Invalid boolean for {env_key}: '{raw}'. Using config default.")
+            return cfg_val
 
         if isinstance(cfg_val, int):
             try:
