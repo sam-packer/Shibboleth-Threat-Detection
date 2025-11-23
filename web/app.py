@@ -3,12 +3,12 @@ import logging
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
+from helpers.globals import cfg
 from nn_scripts.ensembler import ensemble_threat_score
 from external_data.geoip_helper import ensure_geoip_up_to_date, enrich_with_geoip
 from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler
 from external_data.stopforumspam_helper import ensure_sfs_up_to_date, ip_in_toxic_list
 from db.db_helper import db_health_check, record_login_with_scores
-from helpers.globals import CONFIG
 
 load_dotenv()
 
@@ -16,9 +16,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] [%(levelname)s] %(message)s"
 )
-API_CFG = CONFIG["api"]
 
-PASSTHROUGH_MODE = API_CFG["passthrough_mode"]
+PASSTHROUGH_MODE = cfg("api.passthrough_mode", False)
 
 app = Flask(__name__)
 
@@ -81,8 +80,8 @@ def score_endpoint():
 
 def main():
     if preflight():
-        host = API_CFG["host"]
-        port = API_CFG["port"]
+        host = cfg("api.host")
+        port = cfg("api.port")
         debug_mode = False
 
         logging.info(

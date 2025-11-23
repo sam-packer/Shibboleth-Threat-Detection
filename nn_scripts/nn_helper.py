@@ -27,17 +27,17 @@ MODEL_PATH = resolve_path("NN_MODEL_PATH",
 
 SCALER_PATH = resolve_path("NN_SCALER_PATH",
                            os.path.join(cfg("model.output_dir"),
-                                        CONFIG["preprocessing"]["artifacts"]["scaler"])
+                                        cfg("preprocessing.artifacts.scaler"))
                            )
 
 USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH",
                              os.path.join(cfg("model.output_dir"),
-                                          CONFIG["preprocessing"]["artifacts"]["user_map"])
+                                          cfg("preprocessing.artifacts.user_map"))
                              )
 
 PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH",
                                  os.path.join(cfg("model.output_dir"),
-                                              CONFIG["preprocessing"]["artifacts"]["preprocessor"])
+                                              cfg("preprocessing.artifacts.preprocessor"))
                                  )
 USER_THRESHOLD = cfg("model.min_user_events")
 
@@ -102,14 +102,16 @@ def _load_from_mlflow():
         _user_to_id = joblib.load(usermap_p)
         _num_users = len(_user_to_id)
 
-        embed_cfg = CONFIG["model"]
+        embed_dim_scale = cfg("model.embed_dim_scale")
+        min_embed = cfg("model.min_embed_dim")
+        max_embed = cfg("model.max_embed_dim")
 
-        if embed_cfg["embed_dim_scale"] == "log2":
+        if embed_dim_scale == "log2":
             raw = np.log2(_num_users)
         else:
-            raw = embed_cfg["embed_dim_scale"]
+            raw = embed_dim_scale
 
-        _embed_dim = int(min(max(raw, embed_cfg["min_embed_dim"]), embed_cfg["max_embed_dim"]))
+        _embed_dim = int(min(max(raw, min_embed), max_embed))
 
         model_uri = f"models:/{FULL_UC_MODEL_NAME}/{version_num}"
         loaded_model = mlflow.pytorch.load_model(model_uri, map_location=_device)

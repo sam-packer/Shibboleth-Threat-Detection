@@ -2,8 +2,8 @@ import os
 import platform
 import logging
 import subprocess
+from helpers.globals import cfg
 from web.app import app, preflight
-from helpers.globals import CONFIG
 
 
 def main():
@@ -12,13 +12,12 @@ def main():
         logging.error("Preflight checks failed! Aborting startup.")
         return
 
-    API_CFG = CONFIG["api"]
 
-    host = API_CFG["host"]
-    port = API_CFG["port"]
-    workers = API_CFG.get("workers", 2)
-    threads = API_CFG.get("threads", 4)
-    log_level = API_CFG.get("log_level", "info")
+    host = cfg("api.host")
+    port = cfg("api.port")
+    workers = cfg("api.workers", 2)
+    threads = cfg("api.threats", 4)
+    log_level = cfg("api.log_level", "info")
 
     debug_mode = os.getenv("FLASK_DEBUG", "false").lower() == "true"
 

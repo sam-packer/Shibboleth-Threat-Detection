@@ -7,7 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
 from datetime import datetime
 
-from helpers.globals import FEATURE_COLUMNS
+from helpers.globals import cfg
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
@@ -64,7 +64,7 @@ def build_user_profiles(conn, min_samples: int = MIN_SAMPLES_FOR_PROFILE) -> pd.
     - sufficient_data (bool)
     """
     feature_aggs = []
-    for feat in FEATURE_COLUMNS:
+    for feat in cfg("data.feature_columns"):
         feature_aggs.append(f"AVG({feat}) AS {feat}_mean")
         feature_aggs.append(f"STDDEV({feat}) AS {feat}_std")
 
@@ -82,7 +82,7 @@ def build_user_profiles(conn, min_samples: int = MIN_SAMPLES_FOR_PROFILE) -> pd.
 
     # Mark users with sufficient non-zero variance as having reliable profiles
     df["sufficient_data"] = True
-    for feat in FEATURE_COLUMNS:
+    for feat in cfg("data.feature_columns"):
         std_col = f"{feat}_std"
         if std_col in df.columns:
             # If std is null or 0 for critical features, mark as insufficient
@@ -124,7 +124,7 @@ def compute_population_percentiles(conn, sample_size: int = 20000) -> dict:
     Compute population-level percentiles for fallback scoring (new users).
     """
     query = text(f"""
-        SELECT {', '.join(FEATURE_COLUMNS)}
+        SELECT {', '.join(cfg("data.feature_columns"))}
         FROM rba_login_event
         WHERE nn_score = -1.0
         ORDER BY random()
@@ -134,7 +134,7 @@ def compute_population_percentiles(conn, sample_size: int = 20000) -> dict:
     df = pd.read_sql(query, conn, params={"limit": sample_size})
 
     percentiles = {}
-    for feat in FEATURE_COLUMNS:
+    for feat in cfg("data.feature_columns"):
         if feat in df.columns:
             series = df[feat].dropna()
             if len(series) > 0:
@@ -161,7 +161,7 @@ def score_against_user_profile(login_row: dict, profile: dict) -> tuple[float, d
     anomaly_scores = []
     feature_details = {}
 
-    for feat in FEATURE_COLUMNS:
+    for feat in cfg("data.feature_columns"):
         value = login_row.get(feat)
         mean = profile.get(f"{feat}_mean")
         std = profile.get(f"{feat}_std")
@@ -217,7 +217,7 @@ def score_against_population(login_row: dict, percentiles: dict) -> tuple[float,
     outlier_scores = []
     feature_details = {}
 
-    for feat in FEATURE_COLUMNS:
+    for feat in cfg("data.feature_columns"):
         value = login_row.get(feat)
         if value is None or np.isnan(value):
             continue
@@ -304,7 +304,7 @@ def create_detailed_report(output_file: str = None) -> str | None:
             logging.info("[Report] Sampling recent logins for scoring...")
             # Get a reasonable sample of recent logins
             query = text(f"""
-                SELECT login_id, username, event_timestamp, {', '.join(FEATURE_COLUMNS)}
+                SELECT login_id, username, event_timestamp, {', '.join(cfg("data.feature_columns"))}
                 FROM rba_login_event
                 WHERE nn_score = -1.0
                 ORDER BY login_id DESC
@@ -566,7 +566,7 @@ def retroactively_backfill_heuristics(batch_size: int = 5000):
 
             # Process in batches
             base_query = text(f"""
-                SELECT login_id, username, {', '.join(FEATURE_COLUMNS)}
+                SELECT login_id, username, {', '.join(cfg("data.feature_columns"))}
                 FROM rba_login_event
                 WHERE nn_score = -1.0
                 ORDER BY login_id

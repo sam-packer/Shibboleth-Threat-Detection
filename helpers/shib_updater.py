@@ -1,7 +1,8 @@
 import os
 import re
 import shutil
-from helpers.globals import CONFIG
+
+from helpers.globals import cfg
 
 
 def update_shib_threshold(file_path, new_threshold):
@@ -18,8 +19,8 @@ def update_shib_threshold(file_path, new_threshold):
             print(f"Error: File not found at {file_path}")
             return
 
-        backup_enabled = CONFIG["deployment"].get("backup_before_update", True)
-        backup_suffix = CONFIG["deployment"].get("backup_suffix", ".bak")
+        backup_enabled = cfg("deployment.backup_before_update", True)
+        backup_suffix = cfg("deployment.backup_suffix", ".bak")
 
         # Read original file
         with open(file_path, "r") as f:

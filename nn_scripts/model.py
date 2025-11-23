@@ -1,17 +1,16 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from helpers.globals import CONFIG
+
+from helpers.globals import cfg
 
 
 class SimpleRBAModel(nn.Module):
     def __init__(self, input_dim: int, num_users: int, embed_dim: int):
         super().__init__()
 
-        arch_cfg = CONFIG["model"]["architecture"]
-
-        hidden_layers = arch_cfg.get("hidden_layers", [32, 16])
-        dropout_rate = arch_cfg.get("dropout", 0.2)
+        hidden_layers = cfg("model.architecture.hidden_layers", [32, 16])
+        dropout_rate = cfg("model.architecture.dropout", 0.2)
 
         # This allows the neural network to learn the behavior for each user
         # Rather than scoring based on general logins, we personalize it for each user

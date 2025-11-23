@@ -17,7 +17,7 @@ import joblib
 
 from nn_scripts.ensembler import ensemble_threat_score
 from nn_scripts.feature_preprocessor import FeaturePreprocessor
-from helpers.globals import CONFIG, select_device, resolve_path
+from helpers.globals import select_device, resolve_path, cfg
 from nn_scripts.model import SimpleRBAModel
 from helpers.shib_updater import update_shib_threshold
 
@@ -28,51 +28,34 @@ engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=Tr
 
 _device = select_device()
 
-# Config references
-FEATURE_COLUMNS = CONFIG["data"]["feature_columns"]
-TEST_SIZE = CONFIG["data"]["test_size"]
-RANDOM_STATE = CONFIG["data"]["random_state"]
-LIMIT = CONFIG["data"]["limit"]
+FEATURE_COLUMNS = cfg("data.feature_columns")
+TEST_SIZE = cfg("data.test_size")
+RANDOM_STATE = cfg("data.random_state")
+LIMIT = cfg("data.limit")
 
-TRAINING_CFG = CONFIG["training"]
-MODEL_CFG = CONFIG["model"]
-PREPROC_CFG = CONFIG["preprocessing"]
-EVAL_CFG = CONFIG["evaluation"]["threshold_sweep"]
-
-MLFLOW_CFG = CONFIG["mlflow"]
-DEPLOY_CFG = CONFIG["deployment"]
+EVAL_CFG = cfg("evaluation.threshold_sweep")
 
 # Paths
-MODEL_PATH = resolve_path(
-    "NN_MODEL_PATH",
-    os.path.join(MODEL_CFG["output_dir"], MODEL_CFG["checkpoint"])
-)
+MODEL_PATH = resolve_path("NN_MODEL_PATH", os.path.join(cfg("model.output_dir"), cfg("model.checkpoint")))
 
-SCALER_PATH = resolve_path(
-    "NN_SCALER_PATH",
-    os.path.join(PREPROC_CFG["output_dir"], PREPROC_CFG["artifacts"]["scaler"])
-)
+SCALER_PATH = resolve_path("NN_SCALER_PATH",
+                           os.path.join(cfg("preprocessing.output_dir"), cfg("preprocessing.artifacts.scaler")))
 
-USER_MAP_PATH = resolve_path(
-    "NN_USER_MAP_PATH",
-    os.path.join(PREPROC_CFG["output_dir"], PREPROC_CFG["artifacts"]["user_map"])
-)
+USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH",
+                             os.path.join(cfg("preprocessing.output_dir"), cfg("preprocessing.artifacts.user_map")))
 
-PREPROCESSOR_PATH = resolve_path(
-    "NN_PREPROCESSOR_PATH",
-    os.path.join(PREPROC_CFG["output_dir"], PREPROC_CFG["artifacts"]["preprocessor"])
-)
+PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH", os.path.join(cfg("preprocessing.output_dir"),
+                                                                      cfg("preprocessing.artifacts.preprocessor"))
+                                 )
 
-# ------------------------------------------------------------------------------------
 # MLFlow Config
-# ------------------------------------------------------------------------------------
-ENABLE_MLFLOW = MLFLOW_CFG["enable"]
-MLFLOW_TRACKING_URI = MLFLOW_CFG["tracking_uri"]
-MLFLOW_REGISTRY_URI = MLFLOW_CFG["registry_uri"]
-MLFLOW_EXPERIMENT_PATH = MLFLOW_CFG["experiment_path"]
-UC_CATALOG = MLFLOW_CFG["uc_catalog"]
-UC_SCHEMA = MLFLOW_CFG["uc_schema"]
-UC_MODEL_NAME = MLFLOW_CFG["uc_model_name"]
+ENABLE_MLFLOW = cfg("mlflow.enable")
+MLFLOW_TRACKING_URI = cfg("mlflow.tracking_uri")
+MLFLOW_REGISTRY_URI = cfg("mlflow.registry_uri")
+MLFLOW_EXPERIMENT_PATH = cfg("mlflow.experiment_path")
+UC_CATALOG = cfg("mlflow.uc_catalog")
+UC_SCHEMA = cfg("mlflow.uc_schema")
+UC_MODEL_NAME = cfg("mlflow.uc_model_name")
 FULL_UC_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_MODEL_NAME}"
 
 if ENABLE_MLFLOW and not MLFLOW_EXPERIMENT_PATH:
@@ -90,7 +73,7 @@ def load_training_data(limit: int):
     query = text(f"""
         SELECT username, {', '.join(FEATURE_COLUMNS)}, nn_score, platform,
                human_verified, impossible_travel
-        FROM {CONFIG["data"]["table"]}
+        FROM {cfg("data.table")}
         WHERE nn_score >= 0.0
         ORDER BY random()
         LIMIT :limit
@@ -158,13 +141,13 @@ def preprocess_training_data(df):
 
 
 def train_neural_network(X_train, X_val, y_train, y_val, user_train, user_val, num_users, checkpoint_path):
-    raw = np.log2(num_users) if MODEL_CFG["embed_dim_scale"] == "log2" else MODEL_CFG["embed_dim_scale"]
-    embed_dim = int(min(max(raw, MODEL_CFG["min_embed_dim"]), MODEL_CFG["max_embed_dim"]))
+    raw = np.log2(num_users) if cfg("model.embed_dim_scale") == "log2" else cfg("model.embed_dim_scale")
+    embed_dim = int(min(max(raw, cfg("model.min_embed_dim")), cfg("model.max_embed_dim")))
 
-    min_delta = float(TRAINING_CFG["min_delta"])
-    num_epochs = int(TRAINING_CFG["num_epochs"])
-    learning_rate = float(TRAINING_CFG["learning_rate"])
-    patience = int(TRAINING_CFG["patience"])
+    min_delta = float(cfg("training.min_delta"))
+    num_epochs = int(cfg("training.num_epochs"))
+    learning_rate = float(cfg("training.learning_rate"))
+    patience = int(cfg("training.patience"))
 
     mlflow.log_param("embed_dim", embed_dim)
     mlflow.log_param("num_epochs", num_epochs)
@@ -298,7 +281,7 @@ def main():
         # Update Shibboleth via CLI or config
         shib_path = (
                 args.update_shib
-                or (DEPLOY_CFG["shibboleth_path"] if DEPLOY_CFG["update_shibboleth"] else None)
+                or (cfg("deployment.shibboleth_path") if cfg("deployment.update_shibboleth") else None)
         )
 
         if shib_path:
@@ -306,7 +289,7 @@ def main():
 
         # MLFlow model registration
         if ENABLE_MLFLOW:
-            mlflow.log_artifacts(PREPROC_CFG["output_dir"], artifact_path="artifacts")
+            mlflow.log_artifacts(cfg("preprocessing.output_dir", "nn_data"), artifact_path="artifacts")
 
             # Need this for the signature validation in MLFlow. It just gives MLFlow the shape of our data
             example_input = pd.DataFrame(
