@@ -5,10 +5,10 @@ from dotenv import load_dotenv
 
 from helpers.globals import cfg
 from nn_scripts.ensembler import ensemble_threat_score
-from external_data.geoip_helper import ensure_geoip_up_to_date, enrich_with_geoip
-from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler
-from external_data.stopforumspam_helper import ensure_sfs_up_to_date, ip_in_toxic_list
-from db.db_helper import db_health_check, record_login_with_scores
+from external_data.geoip_helper import enrich_with_geoip
+from nn_scripts.nn_helper import compute_nn_score
+from external_data.stopforumspam_helper import ip_in_toxic_list
+from db.db_helper import record_login_with_scores
 
 load_dotenv()
 
@@ -19,16 +19,6 @@ logging.basicConfig(
 
 PASSTHROUGH_MODE = cfg("api.passthrough_mode", False)
 
-
-def preflight():
-    ensure_geoip_up_to_date()
-    ensure_sfs_up_to_date()
-    db_health_check()
-    load_model_and_scaler()
-    return True
-
-
-successful_start = preflight()
 app = Flask(__name__)
 
 
@@ -81,16 +71,15 @@ def score_endpoint():
 
 
 def main():
-    if successful_start:
-        host = cfg("api.host")
-        port = cfg("api.port")
-        debug_mode = False
+    host = cfg("api.host")
+    port = cfg("api.port")
+    debug_mode = False
 
-        logging.info(
-            f"Starting Flask on {host}:{port}, debug={debug_mode}, passthrough={PASSTHROUGH_MODE}"
-        )
+    logging.info(
+        f"Starting Flask on {host}:{port}, debug={debug_mode}, passthrough={PASSTHROUGH_MODE}"
+    )
 
-        app.run(host=host, port=port, debug=debug_mode)
+    app.run(host=host, port=port, debug=debug_mode)
 
 
 if __name__ == "__main__":

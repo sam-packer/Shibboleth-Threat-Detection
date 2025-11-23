@@ -2,8 +2,21 @@ import os
 import platform
 import logging
 import subprocess
+
+from db.db_helper import db_health_check
+from external_data.geoip_helper import ensure_geoip_up_to_date
+from external_data.stopforumspam_helper import ensure_sfs_up_to_date
 from helpers.globals import cfg
-from web.app import app, preflight
+from nn_scripts.nn_helper import load_model_and_scaler
+from web.app import app
+
+
+def preflight():
+    ensure_geoip_up_to_date()
+    ensure_sfs_up_to_date()
+    db_health_check()
+    load_model_and_scaler()
+    return True
 
 
 def main():
@@ -11,7 +24,6 @@ def main():
     if not preflight():
         logging.error("Preflight checks failed! Aborting startup.")
         return
-
 
     host = cfg("api.host")
     port = cfg("api.port")
