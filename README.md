@@ -110,7 +110,7 @@ After calculating known good logins, you must figure out a way to get malicious 
 known malicious logins or using the synthetic generator to create malicious logins. After this, you are ready to train
 your neural network!
 
-#### Training the Model
+### Training the Model
 
 You can train the neural network using the following command:
 
@@ -118,30 +118,79 @@ You can train the neural network using the following command:
 uv run train
 ```
 
-This will train the model and log the results to MLFlow, including the optimal threshold score for denying logins. The
-threshold is calculated during training to balance security with usability based on your specific dataset.
+This will train the model and log the results, including the optimal threshold score for denying logins. The threshold
+is calculated during training to balance security with usability based on your specific dataset. How the threshold is
+stored and used depends on your deployment mode (see below).
 
-#### Updating Shibboleth Configuration
+### Deployment Modes: MLFlow vs. Local
 
-After training, you **MUST** update your Shibboleth configuration with the new threshold score. This step requires
-MLFlow to be enabled and properly configured. MLFlow ensures a consistent threshold score across all load balanced
-servers running the neural network, which is critical for maintaining uniform security policies across your
-infrastructure. To update the Shibboleth configuration with the threshold from your latest trained model, run:
+This system supports two deployment modes for threshold management, each with different trade-offs and use cases.
+
+#### MLFlow Mode (Production Recommended)
+
+In MLFlow mode, MLFlow serves as the single source of truth for both model versions and their corresponding thresholds.
+When you train a model, the threshold is logged as a run parameter in MLFlow alongside the model registration. The API
+maintains an in-memory cache that periodically queries MLFlow for the currently staged or production model versions and
+their thresholds, exposing this information via the `/models` endpoint.
+
+Shibboleth operates in "dynamic" mode, pulling thresholds directly from the API. When a login is scored, Shibboleth
+receives both the risk score and the model version used to generate it, then queries the API for the appropriate
+threshold for that specific model version. Because both the score and threshold are resolved at request time and
+versioned consistently, there is no race condition between model updates and threshold propagation—even across load
+balanced servers.
+
+**Key advantages:**
+
+- No Shibboleth configuration updates or restarts needed after training
+- Safe for multi-node and load balanced deployments
+- Model and threshold are always synchronized
+- Train models anywhere; all API instances automatically stay in sync
+
+**Setup requirements:**
+
+- MLFlow must be enabled in `config.yml`
+- Shibboleth `rba-beans.xml` must be configured with the API endpoint URL (not a static threshold value)
+
+In this mode, `uv run shib-update` is not used. Shibboleth's configuration remains static, and all threshold logic is
+handled dynamically through API calls.
+
+#### Local Mode (Development Only)
+
+In Local mode, MLFlow is not used. This is intended for development or simple single-node setups where model
+reproducibility and multi-server consistency are not concerns. After training, the computed threshold is written to a
+local text file (`nn_data/threshold.txt`).
+
+If you want to update Shibboleth with this threshold, you can optionally run:
 
 ```shell
 uv run shib-update
 ```
 
-This command retrieves the threshold score from the latest model version in MLFlow and updates your Shibboleth RBA
-configuration file automatically.
+This reads the threshold from the local file and updates your Shibboleth XML configuration. You must then manually
+restart Shibboleth for the changes to take effect. Shibboleth uses this single, static threshold for all decisions until
+the next manual update.
 
-#### Ongoing Maintenance
+**Key limitations:**
+
+- Only appropriate for single scoring endpoint deployments
+- Requires training on the same server running the API
+- Requires manual Shibboleth restarts after threshold updates
+- No protection against model/threshold version mismatches
+- Not recommended for production use
+
+**Setup requirements:**
+
+- MLFlow must be disabled in `config.yml` for the backend
+- The `rba-beans.xml` in Shibboleth must be configured with a static threshold value (not an API endpoint URL). See the
+  RBA plugin for more instructions.
+
+### Ongoing Maintenance
 
 You can turn passthrough mode off after training and ensuring your API is properly set up. Your model will now start
 truly scoring logins. At this point, the next step is to set up a scheduler to retrain your neural network frequently.
-Regular retraining is essential as user behavior evolves over time and new attack patterns emerge. After each training
-run, you should update the Shibboleth threshold to reflect the newly calculated optimal score. This ensures your
-risk-based authentication remains effective and adapts to changing conditions.
+Regular retraining is essential as user behavior evolves over time and new attack patterns emerge. In MLFlow mode,
+threshold updates happen automatically with no additional steps required. In Local mode, you must manually run
+`uv run shib-update` and restart Shibboleth after each training run.
 
 ## Deploying
 
@@ -190,7 +239,8 @@ instructions are as follows:
 ## Considerations
 
 It is highly recommended to load balance this application with software such as Caddy. Then, configure the Shibboleth
-plugin to point to your load balanced endpoint.
+plugin to point to your load balanced endpoint. If using MLFlow mode, load balancing is fully supported with no
+additional configuration needed, as all servers will automatically stay synchronized through MLFlow.
 
 There is a PostgresSQL database requirement. It is very easy to shard the database with Citus and what I recommend. This
 will perform extremely well. You can scale it as much as you need depending on how active your Shibboleth IdP instance
