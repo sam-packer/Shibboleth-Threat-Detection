@@ -31,6 +31,7 @@ data:
     - webauthn_supported
 
   test_size: 0.2
+  validation_size: 0.15
   random_state: 41
 
 preprocessing:
@@ -42,6 +43,7 @@ preprocessing:
     scaler: "rba_scaler.pkl"
     user_map: "rba_user_map.pkl"
     preprocessor: "rba_preprocessor.pkl"
+    threshold: "threshold.txt"
 
 model:
   # Concatenates with output_dir
