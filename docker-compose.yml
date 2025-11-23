@@ -7,8 +7,36 @@ services:
       - "8000"
     env_file:
       - .env
+    depends_on:
+      - citus-master
+    networks:
+      - shib-net
     volumes:
       - ../nn_data:/nn_data
+      - ./seeds:/app/seeds
+
+  citus-master:
+    image: citusdata/citus:alpine
+    container_name: citus-master
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: shibdb
+    ports:
+      - "5432:5432"
+    networks:
+      - shib-net
+    volumes:
+      - citus-master-data:/var/lib/postgresql/data
+
+  citus-worker:
+    image: citusdata/citus:alpine
+    container_name: citus-worker
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: shibdb
+      CITUS_WORKER_NAME: worker
     networks:
       - shib-net
 
@@ -32,5 +60,6 @@ networks:
   shib-net:
 
 volumes:
+  citus-master-data:
   caddy_data:
   caddy_config:
