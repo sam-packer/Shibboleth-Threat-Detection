@@ -7,23 +7,14 @@ from db.db_helper import db_health_check
 from external_data.geoip_helper import ensure_geoip_up_to_date
 from external_data.stopforumspam_helper import ensure_sfs_up_to_date
 from helpers.globals import cfg
-from nn_scripts.nn_helper import load_model_and_scaler
 from web.app import app
-
-
-def preflight():
-    ensure_geoip_up_to_date()
-    ensure_sfs_up_to_date()
-    db_health_check()
-    load_model_and_scaler()
-    return True
 
 
 def main():
     """Run API in production mode with appropriate WSGI server."""
-    if not preflight():
-        logging.error("Preflight checks failed! Aborting startup.")
-        return
+    ensure_geoip_up_to_date()
+    ensure_sfs_up_to_date()
+    db_health_check()
 
     host = cfg("api.host")
     port = cfg("api.port")
@@ -61,6 +52,7 @@ def main():
         logging.info("Using Gunicorn WSGI server (Unix mode)")
         cmd = [
             "gunicorn",
+            "--preload",
             "--bind", f"{host}:{port}",
             "--workers", str(workers),
             "--threads", str(threads),

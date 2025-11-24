@@ -2,11 +2,10 @@ import logging
 
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-
 from helpers.globals import cfg
 from nn_scripts.ensembler import ensemble_threat_score
 from external_data.geoip_helper import enrich_with_geoip
-from nn_scripts.nn_helper import compute_nn_score
+from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler
 from external_data.stopforumspam_helper import ip_in_toxic_list
 from db.db_helper import record_login_with_scores
 
@@ -19,6 +18,7 @@ logging.basicConfig(
 
 PASSTHROUGH_MODE = cfg("api.passthrough_mode", False)
 
+load_model_and_scaler()
 app = Flask(__name__)
 
 
