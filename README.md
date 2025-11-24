@@ -10,7 +10,7 @@ ensembled with other heuristics such as how risky an IP is and whether impossibl
 
 - [Shibboleth IdP with the RBA plugin](https://github.com/sam-packer/Shibboleth-RBA-Plugin)
 - PostgresSQL 17
-- Python 3.14+
+- Python 3.11+
 - `uv`
 - Load balancer (recommended)
 - Server with CUDA or MPS support (recommended)
