@@ -12,7 +12,6 @@ from web.app import app
 
 def main():
     """Run API in production mode with appropriate WSGI server."""
-
     ensure_geoip_up_to_date()
     ensure_sfs_up_to_date()
     db_health_check()
