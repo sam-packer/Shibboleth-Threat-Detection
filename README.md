@@ -6,6 +6,38 @@ user's login compared to their previous logins". This is an important distinctio
 risky a user's login is compared to an average login, which is **not** the project's goal. The behavioral data is
 ensembled with other heuristics such as how risky an IP is and whether impossible travel occurred.
 
+## Table of Contents
+
+- [Demo](#demo)
+- [Requirements](#requirements)
+- [Installation](#installation)
+    - [uv Setup](#uv-setup)
+    - [Environment Setup](#environment-setup)
+    - [Storage Setup](#storage-setup)
+    - [Setting up MLFlow](#setting-up-mlflow)
+    - [Shibboleth Setup](#shibboleth-setup)
+- [Dataset Problem and Definition](#dataset-problem-and-definition)
+    - [Data Source](#data-source)
+    - [Features](#features)
+    - [Evaluation Metric](#evaluation-metric)
+    - [Training Data Recommendations](#training-data-recommendations)
+    - [Synthetic Data Generation](#synthetic-data-generation)
+- [Data Collection and Training](#data-collection-and-training)
+    - [Steps to Productionalizing](#steps-to-productionalizing)
+    - [Training the Model](#training-the-model)
+    - [Model Architecture](#model-architecture)
+    - [Model Explainability](#model-explainability)
+    - [Deployment Modes: MLFlow vs. Local](#deployment-modes-mlflow-vs-local)
+    - [Ongoing Maintenance](#ongoing-maintenance)
+- [Deploying](#deploying)
+    - [Bare Metal / Cloud VM](#bare-metal--cloud-vm)
+    - [Docker](#docker)
+- [Reproducibility](#reproducibility)
+    - [Pipeline Reproducibility](#pipeline-reproducibility)
+    - [Deployment Reproducibility](#deployment-reproducibility)
+    - [Dataset Reproducibility](#dataset-reproducibility)
+- [Considerations](#considerations)
+
 ## Demo
 
 A demo with a test Shibboleth instance is available at: [https://sp.sampacker.com](https://sp.sampacker.com). You'll use
@@ -343,6 +375,61 @@ docker-compose exec python-app uv run seed
 # Test the API
 curl http://localhost:5001/models
 ```
+
+## Reproducibility
+
+This project is designed for full reproducibility at multiple levels:
+
+### Pipeline Reproducibility
+
+#### Configuration-Driven Design
+
+- All hyperparameters, model architecture, and training settings are controlled via `config.yml`
+- Random seeds are set globally (`RANDOM_STATE=41`) for deterministic train/test splits
+- Preprocessing pipelines (scaling, imputation) are serialized and versioned alongside models
+
+#### Containerization
+
+- Complete Docker setup ensures identical runtime environments across any platform
+- Dependencies locked via `uv.lock` for exact version reproducibility
+- All external data sources (GeoIP, StopForumSpam) are automatically downloaded and versioned
+
+#### Experiment Tracking
+
+- MLFlow logs all training runs with parameters, metrics, and artifacts
+- Model versioning enables rollback to any previous trained model
+- Every training run is tagged with dataset size, feature set, and threshold
+
+### Deployment Reproducibility
+
+#### MLFlow Model Registry
+
+- Trained models are stored in Unity Catalog with full lineage tracking
+- API automatically loads the latest registered model version
+- Load-balanced servers stay synchronized by pulling from the same MLFlow registry
+- No manual model file transfers needed - deploy anywhere with MLFlow credentials
+
+#### Stateless API Design
+
+- API servers can be restarted, scaled, or replaced without losing model state
+- All model artifacts (scaler, preprocessor, calibrator) are packaged together
+- Infrastructure-as-code via Docker Compose for consistent multi-service deployment
+
+### Dataset Reproducibility
+
+#### Important Note on Data Privacy
+
+This system learns personalized risk profiles for each user. The training data consists of real authentication events
+that cannot be publicly shared due to privacy constraints. However, the system is fully reproducible for any
+organization with Shibboleth IdP:
+
+- Data Collection: Enable passthrough mode to collect your own login events
+- Heuristic: Use `db/bootstrap_scores.py` to accurately bootstrap initial risk scores.
+- Synthetic Generation: Use `db/create_synthetic_data.py` to generate realistic attack patterns
+- Training: Run `uv run train` to build a personalized model for your user base
+
+The methodology is reproducible, even though the exact dataset is institution-specific. Any Shibboleth deployment
+can replicate this pipeline with their own data.
 
 ## Considerations
 
