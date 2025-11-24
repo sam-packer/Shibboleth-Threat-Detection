@@ -19,16 +19,7 @@ logging.basicConfig(
 
 PASSTHROUGH_MODE = cfg("api.passthrough_mode", False)
 
-
-def preflight():
-    ensure_geoip_up_to_date()
-    ensure_sfs_up_to_date()
-    db_health_check()
-    load_model_and_scaler()
-    return True
-
-
-preflight()
+load_model_and_scaler()
 app = Flask(__name__)
 
 
