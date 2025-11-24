@@ -14,6 +14,7 @@ from sklearn.preprocessing import StandardScaler
 from torch import nn
 import joblib
 
+from nn_scripts.calibrator import PlattCalibrator
 from nn_scripts.ensembler import ensemble_threat_score
 from nn_scripts.feature_preprocessor import FeaturePreprocessor
 from helpers.globals import select_device, resolve_path, cfg
@@ -42,6 +43,8 @@ USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH",
                              os.path.join(cfg("preprocessing.output_dir"), cfg("preprocessing.artifacts.user_map")))
 PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH", os.path.join(cfg("preprocessing.output_dir"),
                                                                       cfg("preprocessing.artifacts.preprocessor")))
+CALIBRATOR_PATH = resolve_path("NN_CALIBRATOR_PATH",
+                               os.path.join(cfg("preprocessing.output_dir"), cfg("preprocessing.artifacts.calibrator")))
 
 os.makedirs(cfg("preprocessing.output_dir"), exist_ok=True)
 os.makedirs(cfg("model.output_dir"), exist_ok=True)
@@ -67,17 +70,31 @@ if not ENABLE_MLFLOW:
     mlflow.set_experiment = lambda *args, **kwargs: None
 
 
+def set_global_seeds(seed: int):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    # Make PyTorch deterministic (at some performance cost)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+set_global_seeds(RANDOM_STATE)
+
+
 def load_training_data(limit: int):
     query = text(f"""
         SELECT username, {', '.join(FEATURE_COLUMNS)}, nn_score, platform,
                human_verified, impossible_travel
         FROM {cfg("data.table")}
         WHERE nn_score >= 0.0
-        ORDER BY random()
         LIMIT :limit
     """)
     with engine.connect() as conn:
         df = pd.read_sql(query, conn, params={"limit": limit})
+        df = df.sample(frac=1, random_state=RANDOM_STATE).reset_index(drop=True)
         df["human_verified"] = df.get("human_verified", False).fillna(False).astype(bool)
         df["impossible_travel"] = df.get("impossible_travel", False).fillna(False).astype(bool)
         mlflow.log_param("source_query", str(query))
@@ -231,7 +248,7 @@ def train_neural_network(train_tensors, val_tensors, num_users, checkpoint_path)
 
 def find_best_threshold(model, val_tensors):
     """
-    Tunes the threshold using the VALIDATION set.
+    Tunes threshold using validation set + Platt calibration.
     """
     X_val, _, user_val, true_labels = val_tensors
 
@@ -239,27 +256,35 @@ def find_best_threshold(model, val_tensors):
     with torch.no_grad():
         nn_preds = model(X_val.to(_device), user_val.to(_device)).cpu().numpy().flatten()
 
-    # Apply ensemble logic (if you have other logic, it goes here)
     ensemble_preds = np.array([ensemble_threat_score(nn, 0) for nn in nn_preds])
 
+    # First, calibrate predictions
+    calibrator = PlattCalibrator()
+    calibrator.fit(ensemble_preds, true_labels)
+
+    # Save calibrator to disk
+    calibrator.save(CALIBRATOR_PATH)
+
+    calibrated_preds = calibrator.transform(ensemble_preds)
+
+    # Evaluate thresholds in calibrated space
     thresholds = np.linspace(EVAL_CFG["start"], EVAL_CFG["end"], EVAL_CFG["steps"])
     f1_scores = []
 
     for t in thresholds:
-        preds_bin = (ensemble_preds >= t).astype(int)
+        preds_bin = (calibrated_preds >= t).astype(int)
         f1_scores.append(f1_score(true_labels, preds_bin))
 
     best_idx = int(np.argmax(f1_scores))
     best_t = thresholds[best_idx]
 
-    mlflow.log_param("best_threshold", best_t)
+    mlflow.log_metric("best_threshold", best_t)
     mlflow.log_metric("val_best_f1", f1_scores[best_idx])
 
+    # Write threshold file
     try:
-        out_dir = cfg("preprocessing.output_dir")
-        os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, cfg("preprocessing.artifacts.threshold"))
-
+        out_path = os.path.join(cfg("preprocessing.output_dir"),
+                                cfg("preprocessing.artifacts.threshold"))
         with open(out_path, "w") as f:
             f.write(f"{best_t:.6f}\n")
     except Exception as e:

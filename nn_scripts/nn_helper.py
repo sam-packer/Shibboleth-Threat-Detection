@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from helpers.globals import resolve_path, select_device, cfg
 from sklearn.preprocessing import StandardScaler
 
+from nn_scripts.calibrator import PlattCalibrator
 from nn_scripts.feature_preprocessor import FeaturePreprocessor
 from nn_scripts.model import SimpleRBAModel
 
@@ -39,6 +40,11 @@ PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH",
                                  os.path.join(cfg("model.output_dir"),
                                               cfg("preprocessing.artifacts.preprocessor"))
                                  )
+
+CALIBRATOR_PATH = resolve_path("NN_CALIBRATOR_PATH",
+                               os.path.join(cfg("model.output_dir"), cfg("preprocessing.artifacts.calibrator"))
+                               )
+
 USER_THRESHOLD = cfg("model.min_user_events")
 
 # MLFlow environment
@@ -55,6 +61,7 @@ engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=Tr
 _device = select_device()
 _model = None
 _scaler: StandardScaler | None = None
+_calibrator: PlattCalibrator | None = None
 _user_to_id = {}
 _preprocessor: FeaturePreprocessor | None = None
 
@@ -64,7 +71,8 @@ def _load_from_mlflow():
     Attempts to load the Model and auxiliary artifacts from MLFlow Registry.
     Returns True if successful, False otherwise.
     """
-    global _model, _scaler, _user_to_id, _num_users, _preprocessor, _embed_dim
+    global _model, _scaler, _calibrator, _user_to_id, _num_users, _preprocessor, _embed_dim
+
 
     if not ENABLE_MLFLOW:
         return False
@@ -96,9 +104,11 @@ def _load_from_mlflow():
         scaler_p = os.path.join(local_artifacts_dir, "rba_scaler.pkl")
         preproc_p = os.path.join(local_artifacts_dir, "rba_preprocessor.pkl")
         usermap_p = os.path.join(local_artifacts_dir, "rba_user_map.pkl")
+        calibrator_p = os.path.join(local_artifacts_dir, "rba_calibrator.pkl")
 
         _scaler = joblib.load(scaler_p)
         _preprocessor = joblib.load(preproc_p)
+        _calibrator = PlattCalibrator.load(calibrator_p)
         _user_to_id = joblib.load(usermap_p)
         _num_users = len(_user_to_id)
 
@@ -131,13 +141,14 @@ def _load_from_local():
     """
     Falls back to loading from local file paths defined in .env.
     """
-    global _model, _scaler, _user_to_id, _num_users, _preprocessor, _embed_dim
+    global _model, _scaler, _calibrator, _user_to_id, _num_users, _preprocessor, _embed_dim
 
     logging.info("[NN] Loading from local file system...")
 
     try:
         _scaler = joblib.load(SCALER_PATH)
         _preprocessor = joblib.load(PREPROCESSOR_PATH)
+        _calibrator = PlattCalibrator.load(CALIBRATOR_PATH)
         _user_to_id = joblib.load(USER_MAP_PATH)
     except FileNotFoundError as e:
         logging.error(f"[NN] CRITICAL: Missing local artifact: {e}")
@@ -240,9 +251,18 @@ def compute_nn_score(username: str, features: dict) -> float:
             y_pred = _model(X_tensor, user_id)
             score = float(y_pred.item())
 
+        raw_score = max(0.0, min(score, 1.0))
+
         # Clamp and smooth the score
-        score = max(0.0, min(score, 1.0))
-        return score
+        if _calibrator is not None:
+            try:
+                calibrated_score = _calibrator.transform(np.array([score]))[0]
+                score = max(0.0, min(float(calibrated_score), 1.0))
+                return score
+            except Exception as e:
+                logging.error(f"[NN] Calibration failed, using raw score: {e}")
+
+        return raw_score
 
     except Exception as e:
         logging.error(f"[NN] Inference failed: {e}", exc_info=True)

@@ -1,8 +1,10 @@
 import logging
+import threading
 
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from helpers.globals import cfg
+from helpers.mlflow_helper import MODEL_CACHE, MODEL_CACHE_LOCK, _async_refresh_wrapper, initialize_model_cache
 from nn_scripts.ensembler import ensemble_threat_score
 from external_data.geoip_helper import enrich_with_geoip
 from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler
@@ -18,6 +20,10 @@ logging.basicConfig(
 
 PASSTHROUGH_MODE = cfg("api.passthrough_mode", False)
 
+# Load the model versions from MLFlow into cache
+initialize_model_cache()
+
+# Load the model into memory
 load_model_and_scaler()
 app = Flask(__name__)
 
@@ -68,6 +74,23 @@ def score_endpoint():
     except Exception as e:
         logging.error(f"[API] /score failed: {e}", exc_info=True)
         return jsonify({"error": "Internal server error"}), 500
+
+
+# Logic resides in helpers/mlflow_helper.py
+@app.route("/models", methods=["GET"])
+def models_endpoint():
+    with MODEL_CACHE_LOCK:
+        return jsonify(MODEL_CACHE.copy())
+
+
+@app.route("/internal/refresh-models", methods=["POST"])
+def refresh_models():
+    threading.Thread(
+        target=_async_refresh_wrapper,
+        daemon=True
+    ).start()
+
+    return jsonify({"status": "refresh started"})
 
 
 def main():
