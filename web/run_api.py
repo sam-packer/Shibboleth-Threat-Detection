@@ -45,6 +45,7 @@ def main():
         logging.info("Using Gunicorn WSGI server (Unix mode)")
         cmd = [
             "gunicorn",
+            "--preload",
             "--bind", f"{host}:{port}",
             "--workers", str(workers),
             "--threads", str(threads),
