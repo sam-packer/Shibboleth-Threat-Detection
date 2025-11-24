@@ -3,7 +3,7 @@ import json
 import logging
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import SQLAlchemyError, ProgrammingError
+from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime, timezone
 from typing import Union, Dict, Any, Optional
 
@@ -12,7 +12,7 @@ POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 if not POSTGRES_CONNECTION_STRING:
     raise RuntimeError("POSTGRES_CONNECTION_STRING not found in environment.")
 
-# Ensure future=True for 2.0 style usage
+# Standard Postgres connection
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
 
 ALLOWED_JSON_COLUMNS = {
@@ -30,10 +30,9 @@ ALLOWED_JSON_COLUMNS = {
 
 def init_db_schema():
     """
-    Idempotent database initialization.
-    1. Checks if tables exist.
-    2. If not, runs seeds from the seeds/ folder.
-    3. Enables Citus and distributes tables if not already distributed.
+    Idempotent database initialization for standard Postgres 17.
+    1. Checks if the main table (rba_login_event) exists.
+    2. If not, runs the seed SQL files from the seeds/ folder to create the schema.
     """
     logging.info("[DB] Checking database schema initialization...")
     
@@ -41,7 +40,7 @@ def init_db_schema():
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     seeds_dir = os.path.join(base_dir, "seeds")
     
-    # Order matters due to Foreign Keys
+    # Order matters due to Foreign Keys (create tables before referencing them)
     seed_files = [
         "v4_rba_device.sql",
         "v4_rba_login_event.sql", 
@@ -50,12 +49,11 @@ def init_db_schema():
 
     try:
         with engine.begin() as conn:
-            # 1. Check if schema exists (using Postgres-specific check)
-            # We check for the main table 'rba_login_event'
+            # Check if the schema exists using standard Postgres system catalog functions
             table_check = conn.execute(text("SELECT to_regclass('public.rba_login_event')")).scalar()
 
             if not table_check:
-                logging.info("[DB] Schema missing. Running seeds...")
+                logging.info("[DB] Schema missing. Initializing tables from seeds...")
                 for file_name in seed_files:
                     file_path = os.path.join(seeds_dir, file_name)
                     if not os.path.exists(file_path):
@@ -65,39 +63,10 @@ def init_db_schema():
                     logging.info(f"[DB] Executing seed: {file_name}")
                     with open(file_path, 'r') as f:
                         sql_content = f.read()
-                        # Split by ; to handle multiple statements if necessary, 
-                        # though execute() usually handles scripts if supported by driver.
                         conn.execute(text(sql_content))
-                logging.info("[DB] Seeding complete.")
+                logging.info("[DB] Schema initialization complete.")
             else:
-                logging.info("[DB] Schema already exists. Skipping seeds.")
-
-            # 2. Setup Citus (Sharding)
-            try:
-                # Enable Extension
-                conn.execute(text("CREATE EXTENSION IF NOT EXISTS citus"))
-                
-                # Check if tables are already distributed to avoid "table is already distributed" errors
-                # We check citus_tables system view
-                dist_check = conn.execute(text(
-                    "SELECT count(*) FROM citus_tables WHERE table_name = 'rba_login_event'"
-                )).scalar()
-
-                if dist_check == 0:
-                    logging.info("[DB] Distributing tables via Citus...")
-                    conn.execute(text("SELECT create_distributed_table('rba_device', 'device_uuid')"))
-                    conn.execute(text("SELECT create_distributed_table('rba_login_event', 'username')"))
-                    # Note: rba_scores usually joins on login_id/username. 
-                    # If needed, distribute it here too based on your specific query patterns.
-                    logging.info("[DB] Tables distributed.")
-                else:
-                    logging.info("[DB] Tables already distributed via Citus.")
-
-            except ProgrammingError as e:
-                # This catches cases where Citus might not be installed on the Postgres server
-                logging.warning(f"[DB] Citus extension check failed (Database might not support Citus): {e}")
-            except Exception as e:
-                logging.error(f"[DB] Citus configuration error: {e}")
+                logging.info("[DB] Schema already exists. Skipping initialization.")
 
     except SQLAlchemyError as e:
         logging.error(f"[DB] Critical error during schema initialization: {e}", exc_info=True)

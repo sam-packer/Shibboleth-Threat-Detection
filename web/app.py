@@ -8,7 +8,7 @@ from nn_scripts.ensembler import ensemble_threat_score
 from external_data.geoip_helper import ensure_geoip_up_to_date, enrich_with_geoip
 from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler
 from external_data.stopforumspam_helper import ensure_sfs_up_to_date, ip_in_toxic_list
-# Updated import to include the new init function
+# IMPORT UPDATED HERE:
 from db.db_helper import db_health_check, init_db_schema, record_login_with_scores
 
 load_dotenv()
@@ -23,9 +23,9 @@ def preflight():
     ensure_geoip_up_to_date()
     ensure_sfs_up_to_date()
     
-    # Check connection first
+    # Perform DB Health Check
     if db_health_check():
-        # If connected, ensure schema and sharding are applied
+        # Run Seeding if tables don't exist (No Citus/Sharding anymore)
         init_db_schema()
     else:
         logging.error("Database health check failed. Skipping schema initialization.")
