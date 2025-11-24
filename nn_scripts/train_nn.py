@@ -256,14 +256,16 @@ def find_best_threshold(model, val_tensors):
     with torch.no_grad():
         nn_preds = model(X_val.to(_device), user_val.to(_device)).cpu().numpy().flatten()
 
+    ensemble_preds = np.array([ensemble_threat_score(nn, 0) for nn in nn_preds])
+
     # First, calibrate predictions
     calibrator = PlattCalibrator()
-    calibrator.fit(nn_preds, true_labels)
+    calibrator.fit(ensemble_preds, true_labels)
 
     # Save calibrator to disk
     calibrator.save(CALIBRATOR_PATH)
 
-    calibrated_preds = calibrator.transform(nn_preds)
+    calibrated_preds = calibrator.transform(ensemble_preds)
 
     # Evaluate thresholds in calibrated space
     thresholds = np.linspace(EVAL_CFG["start"], EVAL_CFG["end"], EVAL_CFG["steps"])
