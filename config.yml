@@ -50,6 +50,7 @@ preprocessing:
     scaler: "rba_scaler.pkl"
     user_map: "rba_user_map.pkl"
     preprocessor: "rba_preprocessor.pkl"
+    calibrator: "rba_calibrator.pkl"
     threshold: "threshold.txt"
 
 model:
