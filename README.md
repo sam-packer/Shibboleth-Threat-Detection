@@ -206,7 +206,9 @@ The key feature is user-specific embeddings which personalize the risk assessmen
 user?")
 
 ### Model Explainability
+
 You can generate a graph showing the feature importance and a confusion matrix using the command below:
+
 ```shell
 uv run explain
 ```
@@ -293,12 +295,15 @@ use one simple command to detect your setup and automatically spin up the server
 uv run api-prod
 ```
 
-### Bare Metal
+### Bare Metal / Cloud VM
 
-If you run it on bare metal, the instructions are quite simple. Clone the GitHub repository, and run the API. A sample
-systemd script is provided below for your convenience. Depending on your installation and where you choose to clone the
-project, you may need to change the paths. Hopefully you follow better practices than me and don't clone your projects
-in the root user's home folder. You can put this in `/etc/systemd/system/shib-predict.service`:
+Clone the GitHub repository, set the environment variables, update the config.yml, and run the API. This works on any
+cloud provider (AWS EC2, GCP Compute Engine, Azure VM, etc.) or local server. If you are not using MLFlow, you will need
+to train the model locally prior to running the API. You do not need to retrain the model on the server if you are using
+MLFlow.
+
+A sample systemd script is provided below for your convenience. You can put this in
+`/etc/systemd/system/shib-predict.service`:
 
 ```ini
 [Unit]
@@ -306,9 +311,9 @@ Description = Shibboleth IdP RBA Prediction
 After = network.target
 
 [Service]
-User = root
-WorkingDirectory = /root/shib-predict
-ExecStart = /root/.local/bin/uv run api-prod
+User = [your-user]
+WorkingDirectory = /path/to/shib-predict
+ExecStart = /path/to/uv run api-prod
 Restart = always
 RestartSec = 5
 
@@ -320,30 +325,22 @@ WantedBy = multi-user.target
 
 ### Docker
 
-You can run the entire project (Citus, Caddy reverse proxy, and Flask endpoint) using Docker if you desire. The
+You can run the entire project (Postgres, Caddy reverse proxy, and Flask endpoint) using Docker if you desire. The
 instructions are as follows:
 
 #### Copy .env.example to .env and fill in credentials
 
 ```shell
+# Copy .env.example to .env and fill in credentials
 cp .env.example .env
-```
 
-#### Start services
-
-```shell
+# Start services
 docker compose up -d
-```
 
-#### Run migrations (first time only)
-
-```shell
+# Run migrations (first time only)
 docker-compose exec python-app uv run seed
-```
 
-#### Test the API
-
-```
+# Test the API
 curl http://localhost:5001/models
 ```
 
