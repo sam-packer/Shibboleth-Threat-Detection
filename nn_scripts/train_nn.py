@@ -43,6 +43,9 @@ USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH",
 PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH", os.path.join(cfg("preprocessing.output_dir"),
                                                                       cfg("preprocessing.artifacts.preprocessor")))
 
+os.makedirs(cfg("preprocessing.output_dir"), exist_ok=True)
+os.makedirs(cfg("model.output_dir"), exist_ok=True)
+
 # MLFlow Config
 ENABLE_MLFLOW = cfg("mlflow.enable")
 MLFLOW_TRACKING_URI = cfg("mlflow.tracking_uri")
