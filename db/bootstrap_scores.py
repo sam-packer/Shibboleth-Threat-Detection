@@ -49,7 +49,7 @@ FEATURE_WEIGHTS = {
     # Other features get default weight of 1.0
 }
 
-MIN_SAMPLES_FOR_PROFILE = 10  # Minimum logins needed for user profile
+MIN_SAMPLES_FOR_PROFILE = cfg("model.min_user_events")
 
 
 def build_user_profiles(conn, min_samples: int = MIN_SAMPLES_FOR_PROFILE) -> pd.DataFrame:
@@ -72,7 +72,7 @@ def build_user_profiles(conn, min_samples: int = MIN_SAMPLES_FOR_PROFILE) -> pd.
         SELECT username,
                COUNT(*) AS n,
                {', '.join(feature_aggs)}
-        FROM rba_login_event
+        FROM {cfg("data.table")}
         WHERE nn_score = -1.0
         GROUP BY username
         HAVING COUNT(*) >= :min_samples
@@ -99,10 +99,10 @@ def get_all_user_stats(conn) -> pd.DataFrame:
     """
     Get login counts for ALL users (including those below threshold).
     """
-    query = text("""
+    query = text(f"""
                  SELECT username,
                         COUNT(*) AS login_count
-                 FROM rba_login_event
+                 FROM {cfg("data.table")}
                  WHERE nn_score = -1.0
                  GROUP BY username
                  ORDER BY login_count DESC
@@ -125,7 +125,7 @@ def compute_population_percentiles(conn, sample_size: int = 20000) -> dict:
     """
     query = text(f"""
         SELECT {', '.join(cfg("data.feature_columns"))}
-        FROM rba_login_event
+        FROM {cfg("data.table")}
         WHERE nn_score = -1.0
         ORDER BY random()
         LIMIT :limit

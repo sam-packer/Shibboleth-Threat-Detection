@@ -6,6 +6,18 @@ user's login compared to their previous logins". This is an important distinctio
 risky a user's login is compared to an average login, which is **not** the project's goal. The behavioral data is
 ensembled with other heuristics such as how risky an IP is and whether impossible travel occurred.
 
+## Demo
+
+A demo with a test Shibboleth instance is available at: [https://sp.sampacker.com](https://sp.sampacker.com). You'll use
+the credentials:
+
+- Username: `demo`
+- Password: `test123!`
+
+The API URL is available at `https://shib-predict.sampacker.com`. You can POST `/score` or GET `/models`.
+
+to login. You can then see the system scoring you in real time with the ability to continue to the service provider.
+
 ## Requirements
 
 - [Shibboleth IdP with the RBA plugin](https://github.com/sam-packer/Shibboleth-RBA-Plugin)
@@ -97,6 +109,61 @@ DATABRICKS_TOKEN=<your-personal-access-token>
 For more details on setting things up on the Shibboleth side, please view
 the [RBA plugin](https://github.com/sam-packer/Shibboleth-RBA-Plugin).
 
+## Dataset Problem and Definition
+
+### Data Source
+
+- Legitimate logins: Real Shibboleth IdP authentication events
+- Malicious logins: Synthetic attack generation (see `db/create_synthetic_data.py`)
+
+### Features
+
+27 behavioral metrics including:
+
+- Typing patterns (key_count, avg_key_delay_ms)
+- Mouse behavior (pointer_distance_px, pointer_event_count)
+- Session timing (total_session_time_ms, idle_time_total_ms, active_time_ms)
+- Device fingerprinting (screen dimensions, platform, hardware_concurrency)
+- Contextual data (GeoIP, timezone, IP reputation)
+
+Target Variable: `is_true_threat` (derived from `nn_score=1.0 AND human_verified=True OR impossible_travel=True`)
+
+### Evaluation Metric
+
+F1 Score (balancing false positives vs false negatives for security/usability tradeoff)
+
+Below are the evaluation metrics based on 1,100 logins from Shibboleth IdP:
+
+```
+Best threshold (determined on validation set): 0.045
+
+Test evaluation results:
+F1 Score: 0.9355
+Precision: 0.9355
+Recall:    0.9355
+```
+
+### Training Data Recommendations
+
+- Minimum: 1,000 logins
+- Recommended: 5,000+ logins
+- Per-user minimum: 10 logins for personalized embeddings
+
+### Synthetic Data Generation
+
+You will need malicious logins for the model to catch. A script that generates synthetic data is provided for you:
+
+```shell
+# Generate synthetic malicious logins
+uv run db/create_synthetic_data.py --count 500 --write
+
+# Generate attack campaigns
+uv run db/create_synthetic_data.py --campaigns 10 --write
+
+# Generate impossible travel scenarios
+uv run db/create_synthetic_data.py --impossible-travel 5 --write
+```
+
 ## Data Collection and Training
 
 ### Steps to Productionalizing
@@ -122,6 +189,28 @@ This will train the model and log the results, including the optimal threshold s
 is calculated during training to balance security with usability based on your specific dataset. How the threshold is
 stored and used depends on your deployment mode (see below).
 
+### Model Architecture
+
+The DEFAULT neural network design is below. However, you can customize the input features and the number of hidden
+layers. Two layers is acceptable for a small dataset size. As time progresses, you may want to increase the number of
+layers. However, you probably do not need a neural network as big as you think. Staying conservative is ideal, otherwise
+you can run the risk of overfitting.
+
+- Input: 27 behavioral features + user embedding (4-64 dims)
+- Hidden layers: [32, 16] with ReLU activation and Dropout(0.2)
+- Output: Sigmoid → Platt Calibration → Ensemble with IP risk
+- Loss: Binary Cross-Entropy
+- Optimizer: Adam (lr=0.005)
+
+The key feature is user-specific embeddings which personalize the risk assessment (learns "is THIS risky for THIS
+user?")
+
+### Model Explainability
+You can generate a graph showing the feature importance and a confusion matrix using the command below:
+```shell
+uv run explain
+```
+
 ### Deployment Modes: MLFlow vs. Local
 
 This system supports two deployment modes for threshold management, each with different trade-offs and use cases.
@@ -139,14 +228,14 @@ threshold for that specific model version. Because both the score and threshold 
 versioned consistently, there is no race condition between model updates and threshold propagation—even across load
 balanced servers.
 
-**Key advantages:**
+Key advantages:
 
 - No Shibboleth configuration updates or restarts needed after training
 - Safe for multi-node and load balanced deployments
 - Model and threshold are always synchronized
 - Train models anywhere; all API instances automatically stay in sync
 
-**Setup requirements:**
+Setup requirements:
 
 - MLFlow must be enabled in `config.yml`
 - Shibboleth `rba-beans.xml` must be configured with the API endpoint URL (not a static threshold value)
@@ -170,7 +259,7 @@ This reads the threshold from the local file and updates your Shibboleth XML con
 restart Shibboleth for the changes to take effect. Shibboleth uses this single, static threshold for all decisions until
 the next manual update.
 
-**Key limitations:**
+Key limitations:
 
 - Only appropriate for single scoring endpoint deployments
 - Requires training on the same server running the API
@@ -178,7 +267,7 @@ the next manual update.
 - No protection against model/threshold version mismatches
 - Not recommended for production use
 
-**Setup requirements:**
+Setup requirements:
 
 - MLFlow must be disabled in `config.yml` for the backend
 - The `rba-beans.xml` in Shibboleth must be configured with a static threshold value (not an API endpoint URL). See the
@@ -234,7 +323,29 @@ WantedBy = multi-user.target
 You can run the entire project (Citus, Caddy reverse proxy, and Flask endpoint) using Docker if you desire. The
 instructions are as follows:
 
-- coming soon
+#### Copy .env.example to .env and fill in credentials
+
+```shell
+cp .env.example .env
+```
+
+#### Start services
+
+```shell
+docker compose up -d
+```
+
+#### Run migrations (first time only)
+
+```shell
+docker-compose exec python-app uv run seed
+```
+
+#### Test the API
+
+```
+curl http://localhost:5001/models
+```
 
 ## Considerations
 
