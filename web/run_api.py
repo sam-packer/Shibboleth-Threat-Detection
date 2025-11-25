@@ -2,21 +2,12 @@ import os
 import platform
 import logging
 import subprocess
-
-from db.db_helper import db_health_check, init_db_schema
-from external_data.geoip_helper import ensure_geoip_up_to_date
-from external_data.stopforumspam_helper import ensure_sfs_up_to_date
 from helpers.globals import cfg
 from web.app import app
 
 
 def main():
     """Run API in production mode with appropriate WSGI server."""
-    ensure_geoip_up_to_date()
-    ensure_sfs_up_to_date()
-    db_health_check()
-    init_db_schema()
-
     host = cfg("api.host")
     port = cfg("api.port")
     workers = cfg("api.workers", 2)

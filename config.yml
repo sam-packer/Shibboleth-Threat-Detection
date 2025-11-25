@@ -113,6 +113,12 @@ mlflow:
   # Registered model name
   uc_model_name: "Shibboleth_RBA_Model"
 
+ensemble:
+  # Where should MaxMind GeoIP data be stored?
+  geoip_dir: "geoip_data"
+  # Where should StopForumSpam data be stored?
+  sfs_dir: "stopforumspam_data"
+
 api:
   # IP address to bind to
   host: "127.0.0.1"

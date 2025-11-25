@@ -1,12 +1,13 @@
 import os
 import json
 import logging
+import re
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime, timezone
-from typing import Union, Dict, Any, Optional
-from globals import resolve_path
+from typing import Union, Dict, Any, Optional, Tuple
+from helpers.globals import resolve_path, project_root
 
 load_dotenv()
 POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
@@ -56,9 +57,10 @@ def get_latest_version_info(seeds_root: str) -> Tuple[Optional[str], Optional[st
 
     # Sort by version number descending (highest first) so v10 comes before v2
     versions.sort(key=lambda x: x[0], reverse=True)
-    
+
     # Return the string 'vX' and the full path of the highest version
     return versions[0][1], versions[0][2]
+
 
 def init_db_schema():
     """
@@ -68,13 +70,13 @@ def init_db_schema():
     3. Runs the seed SQL files from that version to create the schema.
     """
     logging.info("[DB] Checking database schema initialization...")
-    
+
     # Resolve path to the main 'seeds' folder
-    seeds_root = resolve_path("seeds")
-    
+    seeds_root = resolve_path("seeds", os.path.join(project_root(), "seeds"))
+
     # Dynamically find the latest version info
     version_str, version_dir = get_latest_version_info(seeds_root)
-    
+
     if not version_dir:
         logging.error("[DB] Could not determine latest seed version. Skipping initialization.")
         return
@@ -83,7 +85,7 @@ def init_db_schema():
     # Order matters due to Foreign Keys: Device -> Login Event -> Scores
     seed_files = [
         f"{version_str}_rba_device.sql",
-        f"{version_str}_rba_login_event.sql", 
+        f"{version_str}_rba_login_event.sql",
         f"{version_str}_rba_scores.sql"
     ]
 
@@ -99,7 +101,7 @@ def init_db_schema():
                     if not os.path.exists(file_path):
                         logging.error(f"[DB] Seed file not found: {file_path}")
                         continue
-                        
+
                     logging.info(f"[DB] Executing seed: {file_name}")
                     with open(file_path, 'r') as f:
                         sql_content = f.read()
