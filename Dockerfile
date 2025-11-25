@@ -17,6 +17,8 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON=python3.14 \
     TORCH_CUDA_VERSION=cpu
 
+ENV PIP_INDEX_URL=https://download.pytorch.org/whl/cpu
+
 COPY pyproject.toml uv.lock ./
 
 RUN uv sync --frozen --no-dev --no-install-project
