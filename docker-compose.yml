@@ -5,40 +5,37 @@ services:
     restart: always
     expose:
       - "8000"
-    env_file:
-      - .env
-    depends_on:
-      - citus-master
-    networks:
-      - shib-net
+    environment:
+      - MAXMIND_LICENSE_KEY=${MAXMIND_LICENSE_KEY}
+      - POSTGRES_CONNECTION_STRING=${POSTGRES_CONNECTION_STRING}
+      - PASSTHROUGH_MODE=false
+      - ENABLE_MLFLOW=true
+      - MLFLOW_TRACKING_URI=databricks
+      - MLFLOW_REGISTRY_URI=databricks-uc
+      - DATABRICKS_HOST=example.cloud.databricks.com
+      - DATABRICKS_TOKEN=${DATABRICKS_TOKEN}
+      - MLFLOW_EXPERIMENT_PATH='/Shared/Shibboleth RBA/rba_model_training'
+      - UC_CATALOG=shibboleth_rba
+      - UC_SCHEMA=models
+      - UC_MODEL_NAME=Shibboleth_RBA_Model
     volumes:
       - ../nn_data:/nn_data
       - ./seeds:/app/seeds
 
-  citus-master:
-    image: citusdata/citus:alpine
-    container_name: citus-master
+  postgres:
+    image: postgres:17-alpine
+    container_name: postgres-db
+    restart: always
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: <YOUR_DB_PASSWORD>
       POSTGRES_DB: shibdb
     ports:
       - "5432:5432"
     networks:
       - shib-net
     volumes:
-      - citus-master-data:/var/lib/postgresql/data
-
-  citus-worker:
-    image: citusdata/citus:alpine
-    container_name: citus-worker
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: shibdb
-      CITUS_WORKER_NAME: worker
-    networks:
-      - shib-net
+      - postgres_data:/var/lib/postgresql/data
 
   caddy:
     image: caddy:latest

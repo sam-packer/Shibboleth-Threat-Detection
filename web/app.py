@@ -8,8 +8,8 @@ from helpers.mlflow_helper import MODEL_CACHE, MODEL_CACHE_LOCK, _async_refresh_
 from nn_scripts.ensembler import ensemble_threat_score
 from external_data.geoip_helper import enrich_with_geoip
 from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler
-from external_data.stopforumspam_helper import ip_in_toxic_list
-from db.db_helper import record_login_with_scores
+from external_data.stopforumspam_helper import ensure_sfs_up_to_date, ip_in_toxic_list
+from db.db_helper import db_health_check, init_db_schema, record_login_with_scores
 
 load_dotenv()
 
