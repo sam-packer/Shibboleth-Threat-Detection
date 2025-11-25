@@ -28,21 +28,6 @@ load_model_and_scaler()
 app = Flask(__name__)
 
 
-def preflight():
-    ensure_geoip_up_to_date()
-    ensure_sfs_up_to_date()
-    
-    # Perform DB Health Check
-    if db_health_check():
-        init_db_schema()
-    else:
-        logging.error("Database health check failed. Skipping schema initialization.")
-        return False
-
-    load_model_and_scaler()
-    return True
-
-
 @app.route("/score", methods=["POST"])
 def score_endpoint():
     try:

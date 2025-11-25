@@ -29,22 +29,62 @@ ALLOWED_JSON_COLUMNS = {
 }
 
 
+def get_latest_version_info(seeds_root: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Scans the seeds directory for version folders (v3, v4, etc.),
+    orders them numerically, and returns the latest version string and its full path.
+    Returns: (version_string, full_path) e.g., ("v4", "/app/seeds/v4")
+    """
+    if not os.path.exists(seeds_root):
+        logging.error(f"[DB] Seeds directory not found at: {seeds_root}")
+        return None, None
+
+    versions = []
+    # Iterate over items in seeds directory
+    for item in os.listdir(seeds_root):
+        full_path = os.path.join(seeds_root, item)
+        if os.path.isdir(full_path):
+            # Match folders like 'v1', 'v2', 'v10' using Regex
+            match = re.match(r'^v(\d+)$', item)
+            if match:
+                version_num = int(match.group(1))
+                versions.append((version_num, item, full_path))
+
+    if not versions:
+        logging.warning(f"[DB] No versioned directories (e.g. 'v4') found in {seeds_root}")
+        return None, None
+
+    # Sort by version number descending (highest first) so v10 comes before v2
+    versions.sort(key=lambda x: x[0], reverse=True)
+    
+    # Return the string 'vX' and the full path of the highest version
+    return versions[0][1], versions[0][2]
+
 def init_db_schema():
     """
     Idempotent database initialization for standard Postgres 17.
     1. Checks if the main table (rba_login_event) exists.
-    2. If not, runs the seed SQL files from the seeds/ folder to create the schema.
+    2. Dynamically finds the latest seed version.
+    3. Runs the seed SQL files from that version to create the schema.
     """
     logging.info("[DB] Checking database schema initialization...")
     
-    # Use helper to find the specific version folder
-    seeds_dir = resolve_path("seeds/v4")
+    # Resolve path to the main 'seeds' folder
+    seeds_root = resolve_path("seeds")
     
+    # Dynamically find the latest version info
+    version_str, version_dir = get_latest_version_info(seeds_root)
+    
+    if not version_dir:
+        logging.error("[DB] Could not determine latest seed version. Skipping initialization.")
+        return
+
+    # Construct filenames dynamically based on the version found (e.g. v4_rba_device.sql)
     # Order matters due to Foreign Keys: Device -> Login Event -> Scores
     seed_files = [
-        "v4_rba_device.sql",
-        "v4_rba_login_event.sql", 
-        "v4_rba_scores.sql"
+        f"{version_str}_rba_device.sql",
+        f"{version_str}_rba_login_event.sql", 
+        f"{version_str}_rba_scores.sql"
     ]
 
     try:
@@ -53,9 +93,9 @@ def init_db_schema():
             table_check = conn.execute(text("SELECT to_regclass('public.rba_login_event')")).scalar()
 
             if not table_check:
-                logging.info("[DB] Schema missing. Initializing tables from seeds...")
+                logging.info(f"[DB] Schema missing. Initializing tables using version: {version_str}...")
                 for file_name in seed_files:
-                    file_path = os.path.join(seeds_dir, file_name)
+                    file_path = os.path.join(version_dir, file_name)
                     if not os.path.exists(file_path):
                         logging.error(f"[DB] Seed file not found: {file_path}")
                         continue
