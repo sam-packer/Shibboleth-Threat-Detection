@@ -6,14 +6,14 @@ services:
     expose:
       - "8000"
     environment:
-      - MAXMIND_LICENSE_KEY=<YOUR_MAXMIND_LICENSE_KEY>
-      - POSTGRES_CONNECTION_STRING=postgresql://<USERNAME>:<PASSWORD>@<DB_HOST>:5432/shib-idp-logins
+      - MAXMIND_LICENSE_KEY=${MAXMIND_LICENSE_KEY}
+      - POSTGRES_CONNECTION_STRING=${POSTGRES_CONNECTION_STRING}
       - PASSTHROUGH_MODE=false
       - ENABLE_MLFLOW=true
       - MLFLOW_TRACKING_URI=databricks
       - MLFLOW_REGISTRY_URI=databricks-uc
       - DATABRICKS_HOST=example.cloud.databricks.com
-      - DATABRICKS_TOKEN=<YOUR_DATABRICKS_TOKEN>
+      - DATABRICKS_TOKEN=${DATABRICKS_TOKEN}
       - MLFLOW_EXPERIMENT_PATH='/Shared/Shibboleth RBA/rba_model_training'
       - UC_CATALOG=shibboleth_rba
       - UC_SCHEMA=models
