@@ -7,13 +7,13 @@ from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 from ipaddress import ip_address as ip_parse
-
 from geoip2.database import Reader
+from helpers.globals import cfg
 
 load_dotenv()
 
 MAXMIND_LICENSE_KEY = os.getenv("MAXMIND_LICENSE_KEY")
-GEOIP_DIR = Path(os.getenv("GEOIP_DIR", "geoip_data"))
+GEOIP_DIR = Path(cfg("ensemble.geoip_dir", "geoip_data"))
 CITY_EDITION = "GeoLite2-City"
 ASN_EDITION = "GeoLite2-ASN"
 MAXMIND_BASE_URL = "https://download.maxmind.com/app/geoip_download"

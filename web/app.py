@@ -1,15 +1,14 @@
 import logging
 import threading
-
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from helpers.globals import cfg
 from helpers.mlflow_helper import MODEL_CACHE, MODEL_CACHE_LOCK, _async_refresh_wrapper, initialize_model_cache
 from nn_scripts.ensembler import ensemble_threat_score
-from external_data.geoip_helper import enrich_with_geoip
+from external_data.geoip_helper import enrich_with_geoip, ensure_geoip_up_to_date
 from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler
-from external_data.stopforumspam_helper import ensure_sfs_up_to_date, ip_in_toxic_list
-from db.db_helper import db_health_check, init_db_schema, record_login_with_scores
+from external_data.stopforumspam_helper import ip_in_toxic_list, ensure_sfs_up_to_date
+from db.db_helper import record_login_with_scores, db_health_check, init_db_schema
 
 load_dotenv()
 
@@ -20,11 +19,18 @@ logging.basicConfig(
 
 PASSTHROUGH_MODE = cfg("api.passthrough_mode", False)
 
+# Preflight check
+ensure_geoip_up_to_date()
+ensure_sfs_up_to_date()
+db_health_check()
+init_db_schema()
+
 # Load the model versions from MLFlow into cache
 initialize_model_cache()
 
 # Load the model into memory
 load_model_and_scaler()
+
 app = Flask(__name__)
 
 
