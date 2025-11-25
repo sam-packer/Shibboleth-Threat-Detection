@@ -2,20 +2,37 @@ import os
 import platform
 import logging
 import subprocess
-from web.app import app, preflight
+
+from db.db_helper import db_health_check
+from external_data.geoip_helper import ensure_geoip_up_to_date
+from external_data.stopforumspam_helper import ensure_sfs_up_to_date
+from helpers.globals import cfg
+from web.app import app
 
 
 def main():
     """Run API in production mode with appropriate WSGI server."""
-    if not preflight():
-        logging.error("Preflight checks failed! Aborting startup.")
-        return
+    ensure_geoip_up_to_date()
+    ensure_sfs_up_to_date()
+    db_health_check()
 
-    port = int(os.getenv("PORT", 5001))
+    host = cfg("api.host")
+    port = cfg("api.port")
+    workers = cfg("api.workers", 2)
+    threads = cfg("api.threads", 4)
+    log_level = cfg("api.log_level", "info")
+
     debug_mode = os.getenv("FLASK_DEBUG", "false").lower() == "true"
 
-    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
-    logging.info(f"Launching API on port {port} (debug={debug_mode})")
+    logging.basicConfig(
+        level=log_level.upper(),
+        format="[%(asctime)s] [%(levelname)s] %(message)s"
+    )
+
+    logging.info(
+        f"Launching API on {host}:{port} (debug={debug_mode}) "
+        f"workers={workers} threads={threads}"
+    )
 
     system = platform.system().lower()
 
@@ -28,16 +45,17 @@ def main():
             return
 
         logging.info("Using Waitress WSGI server (Windows mode)")
-        serve(app, host="0.0.0.0", port=port)
+        serve(app, host=host, port=port)
 
     # use gunicorn on linux
     else:
         logging.info("Using Gunicorn WSGI server (Unix mode)")
         cmd = [
             "gunicorn",
-            "--bind", f"0.0.0.0:{port}",
-            "--workers", str(os.getenv("GUNICORN_WORKERS", 2)),
-            "--threads", str(os.getenv("GUNICORN_THREADS", 4)),
+            "--preload",
+            "--bind", f"{host}:{port}",
+            "--workers", str(workers),
+            "--threads", str(threads),
             "web.app:app",
         ]
         subprocess.run(cmd, check=True)

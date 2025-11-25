@@ -46,3 +46,5 @@ packages = [
 api = "web.app:main"
 api-prod = "web.run_api:main"
 train = "nn_scripts.train_nn:main"
+explain = "nn_scripts.explain_nn:main"
+verify = "helpers.verify_config_usage:main"

@@ -9,9 +9,10 @@ from mlflow import MlflowClient
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
-from helpers.globals import FEATURE_COLUMNS, resolve_path
+from helpers.globals import resolve_path, select_device, cfg
 from sklearn.preprocessing import StandardScaler
 
+from nn_scripts.calibrator import PlattCalibrator
 from nn_scripts.feature_preprocessor import FeaturePreprocessor
 from nn_scripts.model import SimpleRBAModel
 
@@ -21,67 +22,66 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(
 POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 
 # File based environment
-MODEL_PATH = resolve_path("NN_MODEL_PATH", "nn_data/best_rba_model.pt")
-SCALER_PATH = resolve_path("NN_SCALER_PATH", "nn_data/rba_scaler.pkl")
-USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH", "nn_data/rba_user_map.pkl")
-PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH", "nn_data/rba_preprocessor.pkl")
-USER_THRESHOLD = int(os.getenv("NN_MIN_LOGINS", 10))
+MODEL_PATH = resolve_path("NN_MODEL_PATH",
+                          os.path.join(cfg("model.output_dir"), cfg("model.checkpoint"))
+                          )
+
+SCALER_PATH = resolve_path("NN_SCALER_PATH",
+                           os.path.join(cfg("model.output_dir"),
+                                        cfg("preprocessing.artifacts.scaler"))
+                           )
+
+USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH",
+                             os.path.join(cfg("model.output_dir"),
+                                          cfg("preprocessing.artifacts.user_map"))
+                             )
+
+PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH",
+                                 os.path.join(cfg("model.output_dir"),
+                                              cfg("preprocessing.artifacts.preprocessor"))
+                                 )
+
+CALIBRATOR_PATH = resolve_path("NN_CALIBRATOR_PATH",
+                               os.path.join(cfg("model.output_dir"), cfg("preprocessing.artifacts.calibrator"))
+                               )
+
+USER_THRESHOLD = cfg("model.min_user_events")
 
 # MLFlow environment
-ENABLE_MLFLOW = os.getenv("ENABLE_MLFLOW", "True").lower() == "true"
-MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI")
-UC_CATALOG = os.getenv("UC_CATALOG")
-UC_SCHEMA = os.getenv("UC_SCHEMA")
-UC_MODEL_NAME = os.getenv("UC_MODEL_NAME")
+ENABLE_MLFLOW = cfg("mlflow.enable")
+MLFLOW_TRACKING_URI = cfg("mlflow.tracking_uri")
+MLFLOW_REGISTRY_URI = cfg("mlflow.registry_uri")
+UC_CATALOG = cfg("mlflow.uc_catalog")
+UC_SCHEMA = cfg("mlflow.uc_schema")
+UC_MODEL_NAME = cfg("mlflow.uc_model_name")
 FULL_UC_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_MODEL_NAME}"
 
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
 
-
-def get_best_device():
-    """
-    Choose the best available PyTorch device (CUDA, MPS, or CPU).
-    Priority order:
-      1. CUDA (NVIDIA GPUs)
-      2. MPS  (Apple Silicon / Metal)
-      3. CPU  (fallback)
-    """
-    if torch.cuda.is_available():
-        dev = torch.device("cuda")
-        logging.info(f"[NN] Using CUDA device: {torch.cuda.get_device_name(0)}")
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        dev = torch.device("mps")
-        logging.info("[NN] Using Apple MPS backend")
-    else:
-        dev = torch.device("cpu")
-        logging.info("[NN] Using CPU backend")
-    return dev
-
-
-_device = get_best_device()
+_device = select_device()
 _model = None
 _scaler: StandardScaler | None = None
+_calibrator: PlattCalibrator | None = None
 _user_to_id = {}
-_num_users = 0
-_embed_dim = 0
 _preprocessor: FeaturePreprocessor | None = None
 
 
 def _load_from_mlflow():
     """
-    Attempts to load the Model and auxiliary artifacts from MLflow Registry.
+    Attempts to load the Model and auxiliary artifacts from MLFlow Registry.
     Returns True if successful, False otherwise.
     """
-    global _model, _scaler, _user_to_id, _num_users, _preprocessor, _embed_dim
+    global _model, _scaler, _calibrator, _user_to_id, _num_users, _preprocessor, _embed_dim
+
 
     if not ENABLE_MLFLOW:
         return False
 
     if not MLFLOW_TRACKING_URI or not UC_MODEL_NAME:
-        logging.warning("[NN] MLflow enabled but URIs not set. Skipping MLflow load.")
+        logging.warning("[NN] MLFlow enabled but URIs not set. Skipping MLFlow load.")
         return False
 
-    logging.info(f"[NN] Attempting to load model '{FULL_UC_MODEL_NAME}' from MLflow...")
+    logging.info(f"[NN] Attempting to load model '{FULL_UC_MODEL_NAME}' from MLFlow...")
 
     try:
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -104,11 +104,24 @@ def _load_from_mlflow():
         scaler_p = os.path.join(local_artifacts_dir, "rba_scaler.pkl")
         preproc_p = os.path.join(local_artifacts_dir, "rba_preprocessor.pkl")
         usermap_p = os.path.join(local_artifacts_dir, "rba_user_map.pkl")
+        calibrator_p = os.path.join(local_artifacts_dir, "rba_calibrator.pkl")
 
         _scaler = joblib.load(scaler_p)
         _preprocessor = joblib.load(preproc_p)
+        _calibrator = PlattCalibrator.load(calibrator_p)
         _user_to_id = joblib.load(usermap_p)
         _num_users = len(_user_to_id)
+
+        embed_dim_scale = cfg("model.embed_dim_scale")
+        min_embed = cfg("model.min_embed_dim")
+        max_embed = cfg("model.max_embed_dim")
+
+        if embed_dim_scale == "log2":
+            raw = np.log2(_num_users)
+        else:
+            raw = embed_dim_scale
+
+        _embed_dim = int(min(max(raw, min_embed), max_embed))
 
         model_uri = f"models:/{FULL_UC_MODEL_NAME}/{version_num}"
         loaded_model = mlflow.pytorch.load_model(model_uri, map_location=_device)
@@ -128,13 +141,14 @@ def _load_from_local():
     """
     Falls back to loading from local file paths defined in .env.
     """
-    global _model, _scaler, _user_to_id, _num_users, _preprocessor, _embed_dim
+    global _model, _scaler, _calibrator, _user_to_id, _num_users, _preprocessor, _embed_dim
 
     logging.info("[NN] Loading from local file system...")
 
     try:
         _scaler = joblib.load(SCALER_PATH)
         _preprocessor = joblib.load(PREPROCESSOR_PATH)
+        _calibrator = PlattCalibrator.load(CALIBRATOR_PATH)
         _user_to_id = joblib.load(USER_MAP_PATH)
     except FileNotFoundError as e:
         logging.error(f"[NN] CRITICAL: Missing local artifact: {e}")
@@ -145,9 +159,18 @@ def _load_from_local():
         logging.error("[NN] User map is empty.")
         return
 
-    _embed_dim = int(min(max(np.log2(_num_users), 4), 64))
+    embed_dim_scale = cfg("model.embed_dim_scale")
+    min_embed = cfg("model.min_embed_dim")
+    max_embed = cfg("model.max_embed_dim")
 
-    _model = SimpleRBAModel(input_dim=len(FEATURE_COLUMNS), num_users=_num_users, embed_dim=_embed_dim)
+    if embed_dim_scale == "log2":
+        raw = np.log2(_num_users)
+    else:
+        raw = embed_dim_scale
+
+    _embed_dim = int(min(max(raw, min_embed), max_embed))
+
+    _model = SimpleRBAModel(input_dim=len(cfg("data.feature_columns")), num_users=_num_users, embed_dim=_embed_dim)
     try:
         _model.load_state_dict(torch.load(MODEL_PATH, map_location=_device))
     except FileNotFoundError:
@@ -182,9 +205,9 @@ def user_has_sufficient_data(username: str) -> bool:
     try:
         with engine.connect() as conn:
             result = conn.execute(
-                text("""
+                text(f"""
                      SELECT COUNT(*) AS n
-                     FROM rba_login_event
+                     FROM {cfg("data.table")}
                      WHERE username = :username
                        AND nn_score >= 0.0
                      """),
@@ -210,10 +233,10 @@ def compute_nn_score(username: str, features: dict) -> float:
             logging.error("[NN] Model/scaler/preprocessor not loaded. Returning neutral score.")
             return 0.5
 
-        features = _preprocessor.transform_single(features, FEATURE_COLUMNS)
+        features = _preprocessor.transform_single(features, cfg("data.feature_columns"))
 
         # Prepare input tensor
-        X = np.array([[features[col] for col in FEATURE_COLUMNS]], dtype=np.float32)
+        X = np.array([[features[col] for col in cfg("data.feature_columns")]], dtype=np.float32)
         X_scaled = _scaler.transform(X)
         X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
 
@@ -228,9 +251,18 @@ def compute_nn_score(username: str, features: dict) -> float:
             y_pred = _model(X_tensor, user_id)
             score = float(y_pred.item())
 
+        raw_score = max(0.0, min(score, 1.0))
+
         # Clamp and smooth the score
-        score = max(0.0, min(score, 1.0))
-        return score
+        if _calibrator is not None:
+            try:
+                calibrated_score = _calibrator.transform(np.array([score]))[0]
+                score = max(0.0, min(float(calibrated_score), 1.0))
+                return score
+            except Exception as e:
+                logging.error(f"[NN] Calibration failed, using raw score: {e}")
+
+        return raw_score
 
     except Exception as e:
         logging.error(f"[NN] Inference failed: {e}", exc_info=True)
@@ -241,7 +273,7 @@ def test_inference():
     """
     Local manual test utility.
     """
-    dummy_input = {col: np.random.rand() for col in FEATURE_COLUMNS}
+    dummy_input = {col: np.random.rand() for col in cfg("data.feature_columns")}
     score = compute_nn_score("demo_user", dummy_input)
     print(f"NN Score for demo_user: {score:.4f}")
 

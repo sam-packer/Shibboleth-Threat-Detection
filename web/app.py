@@ -1,20 +1,30 @@
-import os
 import logging
+import threading
 
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-
+from helpers.globals import cfg
+from helpers.mlflow_helper import MODEL_CACHE, MODEL_CACHE_LOCK, _async_refresh_wrapper, initialize_model_cache
 from nn_scripts.ensembler import ensemble_threat_score
-from external_data.geoip_helper import ensure_geoip_up_to_date, enrich_with_geoip
+from external_data.geoip_helper import enrich_with_geoip
 from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler
 from external_data.stopforumspam_helper import ensure_sfs_up_to_date, ip_in_toxic_list
 from db.db_helper import db_health_check, init_db_schema, record_login_with_scores
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
 
-PASSTHROUGH_MODE = os.getenv("PASSTHROUGH_MODE", "true").lower() == "true"
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] %(message)s"
+)
 
+PASSTHROUGH_MODE = cfg("api.passthrough_mode", False)
+
+# Load the model versions from MLFlow into cache
+initialize_model_cache()
+
+# Load the model into memory
+load_model_and_scaler()
 app = Flask(__name__)
 
 
@@ -81,12 +91,33 @@ def score_endpoint():
         return jsonify({"error": "Internal server error"}), 500
 
 
+# Logic resides in helpers/mlflow_helper.py
+@app.route("/models", methods=["GET"])
+def models_endpoint():
+    with MODEL_CACHE_LOCK:
+        return jsonify(MODEL_CACHE.copy())
+
+
+@app.route("/internal/refresh-models", methods=["POST"])
+def refresh_models():
+    threading.Thread(
+        target=_async_refresh_wrapper,
+        daemon=True
+    ).start()
+
+    return jsonify({"status": "refresh started"})
+
+
 def main():
-    if preflight():
-        port = int(os.getenv("PORT", 5001))
-        debug_mode = os.getenv("FLASK_DEBUG", "false").lower() == "true"
-        logging.info(f"Starting Flask on 127.0.0.1:{port}, debug={debug_mode}")
-        app.run(host="127.0.0.1", port=port, debug=debug_mode)
+    host = cfg("api.host")
+    port = cfg("api.port")
+    debug_mode = False
+
+    logging.info(
+        f"Starting Flask on {host}:{port}, debug={debug_mode}, passthrough={PASSTHROUGH_MODE}"
+    )
+
+    app.run(host=host, port=port, debug=debug_mode)
 
 
 if __name__ == "__main__":
