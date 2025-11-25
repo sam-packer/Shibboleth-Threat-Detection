@@ -20,7 +20,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 COPY requirements-docker.txt .
 
 # Install ONLY from requirements-docker.txt (no pyproject deps)
-RUN uv sync --requirements requirements-docker.txt --no-dev
+RUN uv venv && uv pip install -r requirements-docker.txt
 
 # Copy all project files
 COPY . .
