@@ -5,6 +5,8 @@ services:
     restart: always
     expose:
       - "8000"
+    networks:
+      - shib-net
     environment:
       - MAXMIND_LICENSE_KEY=${MAXMIND_LICENSE_KEY}
       - POSTGRES_CONNECTION_STRING=${POSTGRES_CONNECTION_STRING}
