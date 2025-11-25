@@ -14,7 +14,9 @@ WORKDIR /app
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    UV_PYTHON=python3.14
+    UV_PYTHON=python3.14 \
+    UV_INDEX_URL=https://download.pytorch.org/whl/cpu \
+    UV_EXTRA_INDEX_URL=https://pypi.org/simple
 
 # Copy CPU-only requirements
 COPY requirements-docker.txt .
