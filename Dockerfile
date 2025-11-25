@@ -18,12 +18,12 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 COPY pyproject.toml uv.lock ./
 
-RUN uv sync --frozen --no-dev
+ENV TORCH_SELECTOR=torch-cpu
+RUN uv sync --frozen --no-dev --extra $TORCH_SELECTOR --no-install-project
 
 COPY . .
 
-RUN uv sync --frozen --no-dev
-
+RUN uv sync --frozen --no-dev --extra $TORCH_SELECTOR
 
 FROM python:3.14-slim AS runtime
 
