@@ -14,15 +14,14 @@ WORKDIR /app
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    UV_PYTHON=python3.14 \
-    UV_INDEX_URL=https://download.pytorch.org/whl/cpu \
-    UV_EXTRA_INDEX_URL=https://pypi.org/simple
+    UV_PYTHON=python3.14
 
 # Copy CPU-only requirements
 COPY requirements-docker.txt .
 
 # Install ONLY from requirements-docker.txt (no pyproject deps)
-RUN uv venv && uv pip install -r requirements-docker.txt
+RUN uv venv && uv pip install --index-strategy unsafe-best-match -r requirements-docker.txt
+
 
 # Copy all project files
 COPY . .
