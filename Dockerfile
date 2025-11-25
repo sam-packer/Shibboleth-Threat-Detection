@@ -8,8 +8,7 @@ WORKDIR /app
 # uv runtime settings
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    UV_PYTHON_DOWNLOADS=never \
-    UV_PYTHON=python3.11
+    UV_PYTHON=python3.14
 
 # Copy project definition
 COPY pyproject.toml uv.lock ./
