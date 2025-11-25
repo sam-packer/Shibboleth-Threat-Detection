@@ -14,18 +14,19 @@ WORKDIR /app
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    UV_PYTHON=python3.14 \
-    TORCH_CUDA_VERSION=cpu
+    UV_PYTHON=python3.14
 
-ENV PIP_INDEX_URL=https://download.pytorch.org/whl/cpu
+# Copy CPU-only requirements
+COPY requirements-docker.txt .
 
-COPY pyproject.toml uv.lock ./
+# Install ONLY from requirements-docker.txt (no pyproject deps)
+RUN uv sync --requirements requirements-docker.txt --no-dev
 
-RUN uv sync --frozen --no-dev --no-install-project
-
+# Copy all project files
 COPY . .
 
-RUN uv sync --frozen --no-dev
+# Install your project itself (editable install)
+RUN uv pip install -e .
 
 FROM python:3.14-slim AS runtime
 
@@ -34,7 +35,6 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 COPY --from=builder /app/.venv /app/.venv
-
 COPY --from=builder /app /app
 
 ENV PATH="/app/.venv/bin:$PATH" \
