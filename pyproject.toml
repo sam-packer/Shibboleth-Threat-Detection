@@ -20,30 +20,10 @@ dependencies = [
     "scikit-learn",
     "scipy-stubs",
     "sqlalchemy",
+    "torch",
     "user-agents",
     "waitress",
 ]
-
-[project.optional-dependencies]
-torch-cpu = [
-    "torch==2.4.*; platform_system=='Linux'",
-]
-
-torch-cuda = [
-    "torch==2.4.*; platform_system=='Linux'",
-]
-
-torch-mps = [
-    "torch==2.4.*; platform_system=='Darwin'",
-]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-
-[[tool.uv.index]]
-name = "pytorch-cuda"
-url = "https://download.pytorch.org/whl/cu121"
 
 [tool.uv]
 package = true

@@ -14,7 +14,8 @@ WORKDIR /app
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    UV_PYTHON=python3.14
+    UV_PYTHON=python3.14 \
+    TORCH_CUDA_VERSION=cpu
 
 COPY pyproject.toml uv.lock ./
 
