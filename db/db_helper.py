@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime, timezone
 from typing import Union, Dict, Any, Optional
+from globals import resolve_path
 
 load_dotenv()
 POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
@@ -36,11 +37,10 @@ def init_db_schema():
     """
     logging.info("[DB] Checking database schema initialization...")
     
-    # Locate seeds folder relative to this file (db/db_helper.py -> ../seeds)
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    seeds_dir = os.path.join(base_dir, "seeds")
+    # Use helper to find the specific version folder
+    seeds_dir = resolve_path("seeds/v4")
     
-    # Order matters due to Foreign Keys (create tables before referencing them)
+    # Order matters due to Foreign Keys: Device -> Login Event -> Scores
     seed_files = [
         "v4_rba_device.sql",
         "v4_rba_login_event.sql", 
