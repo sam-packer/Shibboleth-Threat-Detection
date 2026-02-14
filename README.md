@@ -36,6 +36,7 @@ ensembled with other heuristics such as how risky an IP is and whether impossibl
     - [Deployment Reproducibility](#deployment-reproducibility)
     - [Dataset Reproducibility](#dataset-reproducibility)
 - [Considerations](#considerations)
+- [License](#license)
 
 ## Demo
 
@@ -421,6 +422,13 @@ data, there isn't a problem with having a cluster of older malicious logins whil
 Each time you start the web application, it will check for updates from MaxMind and StopForumSpam for new files. If any
 are found, they will automatically be downloaded. It will also try and connect to the database and run a simple query.
 This is called a "preflight check" and confirms your environment is set up correctly.
+
+## License
+
+This software is licensed under the **PolyForm Noncommercial License 1.0.0**. You may use, copy, and modify this
+software for **noncommercial purposes only**. See [LICENSE.md](LICENSE.md) for the full license text.
+
+Copyright © 2025-2026 Sam Packer. Released under the PolyForm Noncommercial License 1.0.0.
 
 ---
 
