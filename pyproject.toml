@@ -1,46 +1,39 @@
 [project]
 name = "shibboleth-threat-detection"
-version = "2.1.0"
+version = "2.2.0"
 description = "A risk based authentication implementation designed for Shibboleth IdP"
 requires-python = ">=3.14"
 dependencies = [
-    "flask",
-    "geoip2",
-    "gunicorn",
-    "joblib",
-    "matplotlib",
-    "mlflow",
-    "numpy",
-    "openpyxl",
-    "pandas",
-    "pandas-stubs",
-    "psycopg2-binary",
-    "python-dotenv",
-    "requests",
-    "scikit-learn",
-    "scipy-stubs",
-    "sqlalchemy",
-    "torch",
-    "user-agents",
-    "waitress",
+    "flask>=3.1.2",
+    "geoip2>=5.2.0",
+    "gunicorn>=23.0.0",
+    "joblib>=1.5.3",
+    "matplotlib>=3.10.8",
+    "mlflow>=3.9.0",
+    "numpy>=2.4.2",
+    "openpyxl>=3.1.5",
+    "pandas>=2.3.3",
+    "pandas-stubs>=3.0.0.260204",
+    "psycopg2-binary>=2.9.11",
+    "python-dotenv>=1.2.1",
+    "requests>=2.32.5",
+    "scikit-learn>=1.8.0",
+    "scipy-stubs>=1.17.0.2",
+    "sqlalchemy>=2.0.46",
+    "torch>=2.10.0",
+    "user-agents>=2.2.0",
+    "waitress>=3.0.2",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.uv]
 package = true
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["web*", "nn_scripts*", "db*", "helpers*", "external_data*"]
-exclude = ["tests*", "seeds*", "geoip_data*", "stopforumspam_data*", "nn_data*"]
-
-[tool.poetry]
-packages = [
-    { include = "web" },
-    { include = "nn_scripts" },
-    { include = "db" },
-    { include = "helpers" },
-    { include = "external_data" },
-]
+[tool.hatch.build.targets.wheel]
+packages = ["web", "nn_scripts", "db", "helpers", "external_data"]
 
 [project.scripts]
 api = "web.app:main"
