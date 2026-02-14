@@ -31,7 +31,6 @@ ensembled with other heuristics such as how risky an IP is and whether impossibl
     - [Ongoing Maintenance](#ongoing-maintenance)
 - [Deploying](#deploying)
     - [Bare Metal / Cloud VM](#bare-metal--cloud-vm)
-    - [Docker](#docker)
 - [Reproducibility](#reproducibility)
     - [Pipeline Reproducibility](#pipeline-reproducibility)
     - [Deployment Reproducibility](#deployment-reproducibility)
@@ -318,10 +317,10 @@ threshold updates happen automatically with no additional steps required. In Loc
 ## Deploying
 
 There are multiple approaches to deploying. You can run the API on the same server as your Shibboleth server or run it
-on separate servers. You will also need to decide if you plan to run this in Docker or bare metal. Under the assumption
-you have already done your data collection and model training, serving the API endpoint is quite simple. You will need
-to run the API within Gunicorn (macOS / Linux) or Waitress (Windows). This is automatically handled for you and you can
-use one simple command to detect your setup and automatically spin up the server:
+on separate servers. Under the assumption you have already done your data collection and model training, serving the API
+endpoint is quite simple. You will need to run the API within Gunicorn (macOS / Linux) or Waitress (Windows). This is
+automatically handled for you and you can use one simple command to detect your setup and automatically spin up the
+server:
 
 ```shell
 uv run api-prod
@@ -355,27 +354,6 @@ Environment = "PYTHONUNBUFFERED=1"
 WantedBy = multi-user.target
 ```
 
-### Docker
-
-You can run the entire project (Postgres, Caddy reverse proxy, and Flask endpoint) using Docker if you desire. The
-instructions are as follows:
-
-#### Copy .env.example to .env and fill in credentials
-
-```shell
-# Copy .env.example to .env and fill in credentials
-cp .env.example .env
-
-# Start services
-docker compose up -d
-
-# Run migrations (first time only)
-docker-compose exec python-app uv run seed
-
-# Test the API
-curl http://localhost:5001/models
-```
-
 ## Reproducibility
 
 This project is designed for full reproducibility at multiple levels:
@@ -388,9 +366,8 @@ This project is designed for full reproducibility at multiple levels:
 - Random seeds are set globally (`RANDOM_STATE=41`) for deterministic train/test splits
 - Preprocessing pipelines (scaling, imputation) are serialized and versioned alongside models
 
-#### Containerization
+#### Dependency Locking
 
-- Complete Docker setup ensures identical runtime environments across any platform
 - Dependencies locked via `uv.lock` for exact version reproducibility
 - All external data sources (GeoIP, StopForumSpam) are automatically downloaded and versioned
 
@@ -413,7 +390,6 @@ This project is designed for full reproducibility at multiple levels:
 
 - API servers can be restarted, scaled, or replaced without losing model state
 - All model artifacts (scaler, preprocessor, calibrator) are packaged together
-- Infrastructure-as-code via Docker Compose for consistent multi-service deployment
 
 ### Dataset Reproducibility
 

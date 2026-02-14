@@ -8,3 +8,4 @@ stopforumspam_data
 *.pkl
 .DS_Store
 shibboleth_threat_detection.egg-info
+nn_data
