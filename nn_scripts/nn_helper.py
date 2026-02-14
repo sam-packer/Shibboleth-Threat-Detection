@@ -60,6 +60,7 @@ engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=Tr
 
 _device = select_device()
 _model = None
+_model_version: int | None = None
 _scaler: StandardScaler | None = None
 _calibrator: PlattCalibrator | None = None
 _user_to_id = {}
@@ -71,8 +72,7 @@ def _load_from_mlflow():
     Attempts to load the Model and auxiliary artifacts from MLFlow Registry.
     Returns True if successful, False otherwise.
     """
-    global _model, _scaler, _calibrator, _user_to_id, _num_users, _preprocessor, _embed_dim
-
+    global _model, _model_version, _scaler, _calibrator, _user_to_id, _num_users, _preprocessor, _embed_dim
 
     if not ENABLE_MLFLOW:
         return False
@@ -128,6 +128,7 @@ def _load_from_mlflow():
 
         _model = loaded_model.to(_device)
         _model.eval()
+        _model_version = int(version_num)
 
         logging.info(f"[NN] Successfully loaded from MLFlow (Ver: {version_num}). Users: {_num_users}")
         return True
@@ -181,6 +182,10 @@ def _load_from_local():
     _model.to(_device)
     _model.eval()
     logging.info(f"[NN] Local model loaded. Users: {_num_users} | Embed dim: {_embed_dim}")
+
+
+def get_model_version() -> int | None:
+    return _model_version
 
 
 def load_model_and_scaler():

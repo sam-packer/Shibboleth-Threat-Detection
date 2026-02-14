@@ -6,7 +6,7 @@ from helpers.globals import cfg
 from helpers.mlflow_helper import MODEL_CACHE, MODEL_CACHE_LOCK, _async_refresh_wrapper, initialize_model_cache
 from nn_scripts.ensembler import ensemble_threat_score
 from external_data.geoip_helper import enrich_with_geoip, ensure_geoip_up_to_date
-from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler
+from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler, get_model_version
 from external_data.stopforumspam_helper import ip_in_toxic_list, ensure_sfs_up_to_date
 from db.db_helper import record_login_with_scores, db_health_check, init_db_schema
 
@@ -75,7 +75,11 @@ def score_endpoint():
         if not login_id:
             return jsonify({"error": "Failed to record login event"}), 500
 
-        return jsonify({"threatScore": threat_score})
+        response = {"threatScore": threat_score}
+        model_version = get_model_version()
+        if model_version is not None:
+            response["modelVersion"] = model_version
+        return jsonify(response)
 
     except Exception as e:
         logging.error(f"[API] /score failed: {e}", exc_info=True)
