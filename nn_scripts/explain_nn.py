@@ -1,18 +1,15 @@
-import logging
 import os
-import random
+
 import torch
 import joblib
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-from torch import nn
-from nn_scripts.model import SimpleRBAModel
-from nn_scripts.ensembler import ensemble_threat_score
 from helpers.globals import select_device, resolve_path, cfg
+from nn_scripts.model import BehavioralEncoder
 
 load_dotenv()
 
@@ -27,56 +24,26 @@ USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH",
                              os.path.join(cfg("preprocessing.output_dir"), cfg("preprocessing.artifacts.user_map")))
 PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH", os.path.join(cfg("preprocessing.output_dir"),
                                                                       cfg("preprocessing.artifacts.preprocessor")))
+CENTROIDS_PATH = resolve_path("NN_CENTROIDS_PATH",
+                              os.path.join(cfg("preprocessing.output_dir"), cfg("preprocessing.artifacts.centroids")))
+DISTANCE_STATS_PATH = resolve_path("NN_DISTANCE_STATS_PATH",
+                                   os.path.join(cfg("preprocessing.output_dir"),
+                                                cfg("preprocessing.artifacts.distance_stats")))
 
 _device = select_device()
-
-
-def load_threshold():
-    try:
-        threshold_path = resolve_path(
-            "NN_THRESHOLD_PATH",
-            os.path.join(cfg("preprocessing.output_dir"), cfg("preprocessing.artifacts.threshold"))
-        )
-        with open(threshold_path, "r") as f:
-            return float(f.read().strip())
-    except Exception as e:
-        logging.warning(f"Failed to read threshold file: {e}. Using a random value because I hate you.")
-        return random.random()
-
-
-THRESHOLD = load_threshold()
 
 
 def load_data():
     engine = create_engine(POSTGRES_CONNECTION_STRING)
     query = text(f"""
-        SELECT username, {', '.join(FEATURE_COLUMNS)}, nn_score, platform,
-               human_verified, impossible_travel
+        SELECT username, {', '.join(FEATURE_COLUMNS)}, platform, device_category
         FROM {cfg("data.table")}
-        WHERE nn_score >= 0.0
         ORDER BY random()
         LIMIT :limit
     """)
     with engine.connect() as conn:
         df = pd.read_sql(query, conn, params={"limit": LIMIT})
-
-    # Recreate targets
-    df["human_verified"] = df.get("human_verified", False).fillna(False).astype(bool)
-    df["impossible_travel"] = df.get("impossible_travel", False).fillna(False).astype(bool)
-
-    df["is_true_threat"] = (
-            (df["nn_score"] == 1.0) & (df["human_verified"] == True)
-            | (df["impossible_travel"] == True)
-    ).astype(int)
-
     return df
-
-
-def get_predictions(model, X_tensor, user_tensor):
-    model.eval()
-    with torch.no_grad():
-        preds = model(X_tensor.to(_device), user_tensor.to(_device)).cpu().numpy().flatten()
-    return preds
 
 
 def main():
@@ -84,6 +51,8 @@ def main():
     scaler = joblib.load(SCALER_PATH)
     user_to_id = joblib.load(USER_MAP_PATH)
     preprocessor = joblib.load(PREPROCESSOR_PATH)
+    centroids = joblib.load(CENTROIDS_PATH)
+    distance_stats = joblib.load(DISTANCE_STATS_PATH)
 
     # Load Data
     df = load_data()
@@ -91,72 +60,84 @@ def main():
 
     # Preprocess
     df_transformed = preprocessor.transform_df(df.copy(), FEATURE_COLUMNS)
-    df_transformed["user_id"] = df["username"].map(user_to_id).fillna(0).astype(int)
-
     X_raw = df_transformed[FEATURE_COLUMNS].values.astype(np.float32)
-    y_true = df["is_true_threat"].values
-    user_ids = df_transformed["user_id"].values
-
     X_scaled = scaler.transform(X_raw)
 
     # Load Model
-    num_users = len(user_to_id)
     input_dim = len(FEATURE_COLUMNS)
-    raw_dim = np.log2(num_users) if cfg("model.embed_dim_scale") == "log2" else cfg("model.embed_dim_scale")
-    embed_dim = int(min(max(raw_dim, cfg("model.min_embed_dim")), cfg("model.max_embed_dim")))
-
-    model = SimpleRBAModel(input_dim=input_dim, num_users=num_users, embed_dim=embed_dim).to(_device)
+    model = BehavioralEncoder(input_dim=input_dim).to(_device)
     model.load_state_dict(torch.load(MODEL_PATH, map_location=_device))
+    model.eval()
     print("Model loaded successfully.")
 
-    # Tensors
-    X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
-    user_tensor = torch.tensor(user_ids, dtype=torch.long)
-    y_tensor = torch.tensor(y_true, dtype=torch.float32).unsqueeze(1).to(_device)
-
-    # Baseline Loss
-    criterion = nn.BCELoss()
+    # Compute embeddings
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(_device)
     with torch.no_grad():
-        baseline_loss = criterion(model(X_tensor.to(_device), user_tensor.to(_device)), y_tensor).item()
+        embeddings = model(X_tensor).cpu().numpy()
 
-    print(f"Baseline Loss: {baseline_loss:.5f}")
+    # Compute per-sample distances to user centroid
+    usernames = df["username"].values
+    distances = np.zeros(len(df))
+    for i, username in enumerate(usernames):
+        if username in centroids:
+            centroid = centroids[username]
+        else:
+            centroid = centroids["__population__"]
+        distances[i] = 1.0 - np.dot(embeddings[i], centroid)
 
-    feature_importance = {}
-    for i, col_name in enumerate(FEATURE_COLUMNS):
-        original_col = X_scaled[:, i].copy()
-        np.random.shuffle(X_scaled[:, i])
+    distances = np.clip(distances, 0.0, 2.0)
 
-        X_permuted = torch.tensor(X_scaled, dtype=torch.float32)
-        with torch.no_grad():
-            permuted_loss = criterion(model(X_permuted.to(_device), user_tensor.to(_device)), y_tensor).item()
+    # Assign colors: top N users by frequency get unique colors, rest are gray
+    user_counts = pd.Series(usernames).value_counts()
+    top_users = user_counts.head(10).index.tolist()
+    color_map = {}
+    cmap = plt.cm.tab10
+    for i, u in enumerate(top_users):
+        color_map[u] = cmap(i)
 
-        importance = permuted_loss - baseline_loss
-        feature_importance[col_name] = importance
-        X_scaled[:, i] = original_col
+    colors = [color_map.get(u, (0.7, 0.7, 0.7, 0.3)) for u in usernames]
 
-    sorted_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
-    keys = [x[0] for x in sorted_features]
-    values = [x[1] for x in sorted_features]
+    # t-SNE
+    print("Computing t-SNE embedding (this may take a moment)...")
+    perplexity = min(30, len(embeddings) - 1)
+    tsne = TSNE(n_components=2, perplexity=perplexity, random_state=cfg("data.random_state"))
+    tsne_result = tsne.fit_transform(embeddings)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8))
 
-    # Feature Importance
-    ax1.barh(keys[:15][::-1], values[:15][::-1], color='skyblue')
-    ax1.set_xlabel('Increase in Loss (Importance)')
-    ax1.set_title('Feature Importance (Permutation)')
+    # t-SNE Plot — use circles for desktop, triangles for mobile
+    device_cats = df["device_category"].values
+    desktop_mask = np.array([str(d) != "mobile" for d in device_cats])
+    mobile_mask = ~desktop_mask
 
-    # Confusion Matrix
-    print(f"Generating Confusion Matrix (Threshold: {THRESHOLD})...")
-    raw_preds = get_predictions(model, X_tensor, user_tensor)
-    ensemble_preds = np.array([ensemble_threat_score(p, 0) for p in raw_preds])
-    binary_preds = (ensemble_preds >= THRESHOLD).astype(int)
+    if desktop_mask.any():
+        ax1.scatter(tsne_result[desktop_mask, 0], tsne_result[desktop_mask, 1],
+                    c=[colors[i] for i in range(len(colors)) if desktop_mask[i]],
+                    s=8, alpha=0.6, marker="o")
+    if mobile_mask.any():
+        ax1.scatter(tsne_result[mobile_mask, 0], tsne_result[mobile_mask, 1],
+                    c=[colors[i] for i in range(len(colors)) if mobile_mask[i]],
+                    s=12, alpha=0.6, marker="^")
 
-    cm = confusion_matrix(y_true, binary_preds)
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Normal", "Threat"])
+    ax1.set_title("t-SNE Embedding Visualization")
+    ax1.set_xlabel("t-SNE 1")
+    ax1.set_ylabel("t-SNE 2")
 
-    # Plot directly onto the second axis
-    disp.plot(cmap="Blues", ax=ax2, colorbar=True)
-    ax2.set_title(f"Confusion Matrix (Threshold: {THRESHOLD})")
+    # Add legend for top users + device category markers
+    for u in top_users:
+        ax1.scatter([], [], c=[color_map[u]], label=u, s=30)
+    ax1.scatter([], [], c="gray", marker="o", label="Desktop", s=30)
+    ax1.scatter([], [], c="gray", marker="^", label="Mobile", s=30)
+    ax1.legend(loc="best", fontsize=7, title="Top Users / Device")
+
+    # Distance Distribution
+    ax2.hist(distances, bins=80, color="steelblue", edgecolor="white", alpha=0.8)
+    ax2.axvline(x=np.percentile(distances, 95), color="orange", linestyle="--", label="p95")
+    ax2.axvline(x=np.percentile(distances, 99), color="red", linestyle="--", label="p99")
+    ax2.set_title("Distance-to-Centroid Distribution")
+    ax2.set_xlabel("Cosine Distance")
+    ax2.set_ylabel("Count")
+    ax2.legend()
 
     plt.tight_layout()
     plt.show()

@@ -1,54 +1,36 @@
 # Shibboleth Threat Detection
 
-This is a risk-based authentication system designed for use with Shibboleth IdP. Behavioral data is collected and
-trained with a neural network. The neural network adapts scoring to each user's behavior and learns "how risky is this
-user's login compared to their previous logins". This is an important distinction from a neural network that learns how
-risky a user's login is compared to an average login, which is **not** the project's goal. The behavioral data is
-ensembled with other heuristics such as how risky an IP is and whether impossible travel occurred.
+This is a risk-based authentication system for Shibboleth IdP. It uses triplet metric learning to train an encoder
+that maps behavioral login data into an embedding space. Each user's normal logins end up clustering together, so
+anomaly detection is just measuring how far a new login is from that user's centroid. The further away it is, the more
+suspicious. You don't need any labeled malicious data to train it, which means it works from day one once you've
+collected enough logins. The anomaly score gets combined with IP reputation to produce a final threat score.
 
-## Table of Contents
+## Table of contents
 
-- [Demo](#demo)
 - [Requirements](#requirements)
 - [Installation](#installation)
-    - [uv Setup](#uv-setup)
-    - [Environment Setup](#environment-setup)
-    - [Storage Setup](#storage-setup)
+    - [uv setup](#uv-setup)
+    - [Environment setup](#environment-setup)
+    - [Storage setup](#storage-setup)
     - [Setting up MLFlow](#setting-up-mlflow)
-    - [Shibboleth Setup](#shibboleth-setup)
-- [Dataset Problem and Definition](#dataset-problem-and-definition)
-    - [Data Source](#data-source)
+    - [Shibboleth setup](#shibboleth-setup)
+- [Dataset](#dataset)
+    - [Data source](#data-source)
     - [Features](#features)
-    - [Evaluation Metric](#evaluation-metric)
-    - [Training Data Recommendations](#training-data-recommendations)
-    - [Synthetic Data Generation](#synthetic-data-generation)
-- [Data Collection and Training](#data-collection-and-training)
-    - [Steps to Productionalizing](#steps-to-productionalizing)
-    - [Training the Model](#training-the-model)
-    - [Model Architecture](#model-architecture)
-    - [Model Explainability](#model-explainability)
-    - [Deployment Modes: MLFlow vs. Local](#deployment-modes-mlflow-vs-local)
-    - [Ongoing Maintenance](#ongoing-maintenance)
+    - [Training data recommendations](#training-data-recommendations)
+- [Data collection and training](#data-collection-and-training)
+    - [Getting to production](#getting-to-production)
+    - [Training the model](#training-the-model)
+    - [Model architecture](#model-architecture)
+    - [Model explainability](#model-explainability)
+    - [Deployment modes: MLFlow vs. Local](#deployment-modes-mlflow-vs-local)
+    - [Ongoing maintenance](#ongoing-maintenance)
 - [Deploying](#deploying)
-    - [Bare Metal / Cloud VM](#bare-metal--cloud-vm)
+    - [Bare metal](#bare-metal)
 - [Reproducibility](#reproducibility)
-    - [Pipeline Reproducibility](#pipeline-reproducibility)
-    - [Deployment Reproducibility](#deployment-reproducibility)
-    - [Dataset Reproducibility](#dataset-reproducibility)
 - [Considerations](#considerations)
 - [License](#license)
-
-## Demo
-
-A demo with a test Shibboleth instance is available at: [https://sp.sampacker.com](https://sp.sampacker.com). You'll use
-the credentials:
-
-- Username: `demo`
-- Password: `test123!`
-
-The API URL is available at `https://shib-predict.sampacker.com`. You can POST `/score` or GET `/models`.
-
-to login. You can then see the system scoring you in real time with the ability to continue to the service provider.
 
 ## Requirements
 
@@ -61,50 +43,48 @@ to login. You can then see the system scoring you in real time with the ability 
 
 ## Installation
 
-### uv Setup
+### uv setup
 
-This project uses [uv](https://docs.astral.sh/uv/) to manage packages. First, create a uv virtual environment and
-install the necessary dependencies with the following commands:
+This project uses [uv](https://docs.astral.sh/uv/) to manage packages. Create a virtual environment and install
+dependencies:
 
 ```shell
 uv venv
 uv sync
 ```
 
-Then, activate the virtual environment using the standard commands:
+Then activate the virtual environment:
 
 ```shell
 source .venv/bin/activate     # macOS / Linux
 .\.venv\Scripts\activate      # Windows
 ```
 
-### Environment Setup
+### Environment setup
 
-Copy the `.env.example` file and fill in the values. This involves putting in a MaxMind License Key in. You can sign
-up [here](https://www.maxmind.com/en/home) and once you have an account, go to "Manage License Keys". Then, create a new
-key and put it in the environment file as follows:
+Copy the `.env.example` file and fill in the values. You'll need a MaxMind License Key. Sign
+up [here](https://www.maxmind.com/en/home), go to "Manage License Keys", create a new key, and add it:
 
 ```dotenv
 MAXMIND_LICENSE_KEY=my_license_key
 ```
 
-You'll also want to add a PostgresSQL connection string to the `.env` file. An example is below:
+You'll also need a PostgresSQL connection string:
 
 ```dotenv
 POSTGRES_CONNECTION_STRING=postgresql://your_username_here:your_password_here@127.0.0.1:5432/your_database_here
 ```
 
-### Storage Setup
+### Storage setup
 
-This project uses Postgres and Citus. You can follow this
-tutorial [here](https://www.postgresql.org/download/linux/debian/) to set up Postgres on Debian. To add the Citus
-extension to Postgres, please refer to the Citus installation guide [here](https://www.citusdata.com/download/).
+This project uses Postgres and Citus. You can follow
+[this tutorial](https://www.postgresql.org/download/linux/debian/) to set up Postgres on Debian. For the Citus
+extension, refer to the [Citus installation guide](https://www.citusdata.com/download/).
 
-To ensure strong data consistency, the data collected from Shibboleth is versioned. The latest version of the metrics is
-v4. When setting up your database, you should seed it with v4. You can seed your database manually or with the
-`uv run seed` command. If you choose to do it manually, please refer to the `seeds` folder for the schema.
+The metrics schema is versioned. The current version is v1. When setting up your database, seed it with v1. You can do
+this manually (see the `seeds` folder) or with `uv run seed`.
 
-Sharding the database with Citus is incredibly easy and can be done as follows:
+Sharding with Citus is straightforward:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS citus;
@@ -116,8 +96,8 @@ You can then add worker nodes and set the shard count depending on how big your 
 
 ### Setting up MLFlow
 
-You will want to set up [MLFlow](https://mlflow.org/) for this project. This uses the UC catalog, so you'll need to set
-up the schema. In MLFlow, go to New > Query and run this:
+You'll want [MLFlow](https://mlflow.org/) set up for this project. It uses the UC catalog, so you need to create
+the schema. In MLFlow, go to New > Query and run:
 
 ```sql
 CREATE
@@ -127,30 +107,28 @@ GRANT ALL PRIVILEGES ON CATALOG shibboleth_rba TO `your-user@domain.com`;
 CREATE SCHEMA shibboleth_rba.models;
 ```
 
-For the environment setup, create a personal access token and change the host. You can do this in Account Settings >
-Developer. The host depends on your MLFlow setup. Under the assumption you are using Databricks, it is the same as the
-URL you use to access your MLFlow dashboard. Ensure you have these set in your `.env` file:
+Then create a personal access token (Account Settings > Developer) and add these to your `.env` file. If you're using
+Databricks, the host is the same URL you use to access your MLFlow dashboard:
 
 ```dotenv
 DATABRICKS_HOST=example.cloud.databricks.com
 DATABRICKS_TOKEN=<your-personal-access-token>
 ```
 
-### Shibboleth Setup
+### Shibboleth setup
 
-For more details on setting things up on the Shibboleth side, please view
-the [RBA plugin](https://github.com/sam-packer/Shibboleth-RBA-Plugin).
+For the Shibboleth side, see the [RBA plugin](https://github.com/sam-packer/Shibboleth-RBA-Plugin).
 
-## Dataset Problem and Definition
+## Dataset
 
-### Data Source
+### Data source
 
-- Legitimate logins: Real Shibboleth IdP authentication events
-- Malicious logins: Synthetic attack generation (see `db/create_synthetic_data.py`)
+Login data comes from real Shibboleth IdP authentication events. You don't need any labeled malicious data. The system
+learns what normal looks like for each user and flags anything that deviates from it.
 
 ### Features
 
-27 behavioral metrics including:
+25 behavioral metrics including:
 
 - Typing patterns (key_count, avg_key_delay_ms)
 - Mouse behavior (pointer_distance_px, pointer_event_count)
@@ -158,184 +136,130 @@ the [RBA plugin](https://github.com/sam-packer/Shibboleth-RBA-Plugin).
 - Device fingerprinting (screen dimensions, platform, hardware_concurrency)
 - Contextual data (GeoIP, timezone, IP reputation)
 
-Target Variable: `is_true_threat` (derived from `nn_score=1.0 AND human_verified=True OR impossible_travel=True`)
-
-### Evaluation Metric
-
-F1 Score (balancing false positives vs false negatives for security/usability tradeoff)
-
-Below are the evaluation metrics based on 1,100 logins from Shibboleth IdP:
-
-```
-Best threshold (determined on validation set): 0.045
-
-Test evaluation results:
-F1 Score: 0.9355
-Precision: 0.9355
-Recall:    0.9355
-```
-
-### Training Data Recommendations
+### Training data recommendations
 
 - Minimum: 1,000 logins
 - Recommended: 5,000+ logins
-- Per-user minimum: 10 logins for personalized embeddings
+- Per-user minimum: 10 logins for a personalized centroid (users below this fall back to a population centroid)
 
-### Synthetic Data Generation
+## Data collection and training
 
-You will need malicious logins for the model to catch. A script that generates synthetic data is provided for you:
+### Getting to production
 
-```shell
-# Generate synthetic malicious logins
-uv run db/create_synthetic_data.py --count 500 --write
+1. **Collect data.** Deploy the API and let logins accumulate in the database. Before the model is trained, the API
+   returns a neutral score (0.5) for all logins, so nothing gets blocked.
+2. **Accumulate logins.** Wait until you have at least ~1,000 logins with a reasonable number of users having 10+
+   logins each.
+3. **Train.** Run `uv run train`. The encoder learns an embedding space where each user's logins cluster together.
+   Centroids and distance thresholds are computed automatically.
+4. **Deploy.** Restart the API so it picks up the trained model. Logins will now be scored based on how anomalous they
+   are relative to each user's established behavior.
 
-# Generate attack campaigns
-uv run db/create_synthetic_data.py --campaigns 10 --write
-
-# Generate impossible travel scenarios
-uv run db/create_synthetic_data.py --impossible-travel 5 --write
-```
-
-## Data Collection and Training
-
-### Steps to Productionalizing
-
-There are multiple steps to productionalizing this. The first is collecting data. You should ensure that you have
-passthrough mode turned on. This collects data silently and allows logins through Shibboleth. After you have data (~
-1,000 logins minimum), you must calculate the scores for known good logins. We've developed a heuristic helper to do so.
-However, it still requires manual intervention and tuning depending on your results.
-
-After calculating known good logins, you must figure out a way to get malicious logins. You have two options: flagging
-known malicious logins or using the synthetic generator to create malicious logins. After this, you are ready to train
-your neural network!
-
-### Training the Model
-
-You can train the neural network using the following command:
+### Training the model
 
 ```shell
 uv run train
 ```
 
-This will train the model and log the results, including the optimal threshold score for denying logins. The threshold
-is calculated during training to balance security with usability based on your specific dataset. How the threshold is
-stored and used depends on your deployment mode (see below).
+This trains the encoder, computes per-user centroids, and determines a global anomaly threshold (p99 of all training
+distances). Artifacts saved: encoder, scaler, preprocessor, user map, centroids, distance statistics, and threshold
+file.
 
-### Model Architecture
+### Model architecture
 
-The DEFAULT neural network design is below. However, you can customize the input features and the number of hidden
-layers. Two layers is acceptable for a small dataset size. As time progresses, you may want to increase the number of
-layers. However, you probably do not need a neural network as big as you think. Staying conservative is ideal, otherwise
-you can run the risk of overfitting.
+The encoder is a feedforward network that projects behavioral features into a 32-dimensional embedding space:
 
-- Input: 27 behavioral features + user embedding (4-64 dims)
-- Hidden layers: [32, 16] with ReLU activation and Dropout(0.2)
-- Output: Sigmoid → Platt Calibration → Ensemble with IP risk
-- Loss: Binary Cross-Entropy
-- Optimizer: Adam (lr=0.005)
+- Input: 25 behavioral features
+- Hidden layers: [64, 48] with BatchNorm, ReLU, and Dropout(0.15)
+- Output: 32-dim embedding, L2-normalized onto the unit hypersphere
+- Loss: TripletMarginLoss (margin=0.3, p=2)
+- Optimizer: Adam (lr=0.001) with ReduceLROnPlateau scheduler
 
-The key feature is user-specific embeddings which personalize the risk assessment (learns "is THIS risky for THIS
-user?")
+There is no user embedding layer. User identity is captured via post-hoc centroids (mean of a user's embeddings),
+which means new users work immediately by falling back to a population centroid.
 
-### Model Explainability
+Anomaly scoring works by computing cosine distance from a login's embedding to the user's centroid:
+- Distance at or below the user's mean: score ~0.05 (clearly normal)
+- Distance between mean and p95: linear ramp from 0.05 to 0.50
+- Distance above p95: exponential escalation toward 1.0
 
-You can generate a graph showing the feature importance and a confusion matrix using the command below:
+### Model explainability
+
+You can generate a t-SNE visualization of the embedding space and a distance distribution histogram:
 
 ```shell
 uv run explain
 ```
 
-### Deployment Modes: MLFlow vs. Local
+The t-SNE plot shows user clusters in embedding space (top users colored, others gray). The histogram shows the
+distribution of distances to centroids with p95 and p99 lines marked.
 
-This system supports two deployment modes for threshold management, each with different trade-offs and use cases.
+### Deployment modes: MLFlow vs. Local
 
-#### MLFlow Mode (Production Recommended)
+#### MLFlow mode (recommended for production)
 
-In MLFlow mode, MLFlow serves as the single source of truth for both model versions and their corresponding thresholds.
-When you train a model, the threshold is logged as a run parameter in MLFlow alongside the model registration. The API
-maintains an in-memory cache that periodically queries MLFlow for the currently staged or production model versions and
-their thresholds, exposing this information via the `/models` endpoint.
+In MLFlow mode, MLFlow is the single source of truth for model versions and their thresholds. When you train a model,
+the threshold is logged as a metric alongside the model registration. The API keeps an in-memory cache that periodically
+queries MLFlow for current model versions and thresholds, and exposes this via the `/models` endpoint.
 
-Shibboleth operates in "dynamic" mode, pulling thresholds directly from the API. When a login is scored, Shibboleth
-receives both the risk score and the model version used to generate it, then queries the API for the appropriate
-threshold for that specific model version. Because both the score and threshold are resolved at request time and
-versioned consistently, there is no race condition between model updates and threshold propagation—even across load
-balanced servers.
+Shibboleth runs in "dynamic" mode, pulling thresholds directly from the API. When a login is scored, Shibboleth gets
+both the risk score and the model version, then queries the API for the threshold for that version. Because both are
+resolved at request time and versioned together, there's no race condition between model updates and threshold
+propagation, even across load-balanced servers.
 
-Key advantages:
+Why you'd want this:
 
-- No Shibboleth configuration updates or restarts needed after training
-- Safe for multi-node and load balanced deployments
-- Model and threshold are always synchronized
-- Train models anywhere; all API instances automatically stay in sync
+- No Shibboleth restarts needed after training
+- Safe for multi-node and load-balanced deployments
+- Model and threshold always stay in sync
+- You can train anywhere and all API instances pick it up
 
-Setup requirements:
+To set it up, enable MLFlow in `config.yml` and configure your Shibboleth `rba-beans.xml` with the API endpoint URL
+(not a static threshold value). `uv run shib-update` is not used in this mode.
 
-- MLFlow must be enabled in `config.yml`
-- Shibboleth `rba-beans.xml` must be configured with the API endpoint URL (not a static threshold value)
+#### Local mode (development only)
 
-In this mode, `uv run shib-update` is not used. Shibboleth's configuration remains static, and all threshold logic is
-handled dynamically through API calls.
+When MLFlow is disabled, the threshold is written to a local file (`nn_data/threshold.txt`) after training. This is
+fine for development or simple single-node setups, but it doesn't scale well.
 
-#### Local Mode (Development Only)
-
-In Local mode, MLFlow is not used. This is intended for development or simple single-node setups where model
-reproducibility and multi-server consistency are not concerns. After training, the computed threshold is written to a
-local text file (`nn_data/threshold.txt`).
-
-If you want to update Shibboleth with this threshold, you can optionally run:
+If you want to push the threshold to Shibboleth, run:
 
 ```shell
 uv run shib-update
 ```
 
-This reads the threshold from the local file and updates your Shibboleth XML configuration. You must then manually
-restart Shibboleth for the changes to take effect. Shibboleth uses this single, static threshold for all decisions until
-the next manual update.
+This reads the local threshold file and updates your Shibboleth XML configuration. You'll need to restart Shibboleth
+for it to take effect.
 
-Key limitations:
+The limitations are what you'd expect: you have to train on the same server running the API, you need manual restarts
+after every threshold update, and there's no protection against model/threshold version mismatches across multiple
+servers. MLFlow must be disabled in `config.yml`, and `rba-beans.xml` must use a static threshold value. See the RBA
+plugin for more instructions.
 
-- Only appropriate for single scoring endpoint deployments
-- Requires training on the same server running the API
-- Requires manual Shibboleth restarts after threshold updates
-- No protection against model/threshold version mismatches
-- Not recommended for production use
+### Ongoing maintenance
 
-Setup requirements:
-
-- MLFlow must be disabled in `config.yml` for the backend
-- The `rba-beans.xml` in Shibboleth must be configured with a static threshold value (not an API endpoint URL). See the
-  RBA plugin for more instructions.
-
-### Ongoing Maintenance
-
-You can turn passthrough mode off after training and ensuring your API is properly set up. Your model will now start
-truly scoring logins. At this point, the next step is to set up a scheduler to retrain your neural network frequently.
-Regular retraining is essential as user behavior evolves over time and new attack patterns emerge. In MLFlow mode,
-threshold updates happen automatically with no additional steps required. In Local mode, you must manually run
-`uv run shib-update` and restart Shibboleth after each training run.
+Once the API is running with a trained model, you should set up a scheduler to retrain regularly.
+User behavior changes over time, so periodic retraining keeps the centroids fresh. In MLFlow mode, threshold updates
+propagate automatically. In Local mode, you need to manually run `uv run shib-update` and restart Shibboleth after
+each training run.
 
 ## Deploying
 
-There are multiple approaches to deploying. You can run the API on the same server as your Shibboleth server or run it
-on separate servers. Under the assumption you have already done your data collection and model training, serving the API
-endpoint is quite simple. You will need to run the API within Gunicorn (macOS / Linux) or Waitress (Windows). This is
-automatically handled for you and you can use one simple command to detect your setup and automatically spin up the
-server:
+You can run the API on the same server as Shibboleth or on separate servers. Once you've done your data collection
+and model training, serving the API is straightforward. It runs within Gunicorn (macOS/Linux) or Waitress (Windows),
+and the detection is automatic:
 
 ```shell
 uv run api-prod
 ```
 
-### Bare Metal / Cloud VM
+### Bare metal
 
-Clone the GitHub repository, set the environment variables, update the config.yml, and run the API. This works on any
-cloud provider (AWS EC2, GCP Compute Engine, Azure VM, etc.) or local server. If you are not using MLFlow, you will need
-to train the model locally prior to running the API. You do not need to retrain the model on the server if you are using
-MLFlow.
+Clone the repository, set the environment variables, update `config.yml`, and run the API. This works on any cloud
+provider (AWS EC2, GCP Compute Engine, Azure VM, etc.) or on a local server. If you're not using MLFlow, you'll need
+to train the model locally before running the API. You don't need to retrain on the server if you're using MLFlow.
 
-A sample systemd script is provided below for your convenience. You can put this in
-`/etc/systemd/system/shib-predict.service`:
+Here's a sample systemd unit file. Put it in `/etc/systemd/system/shib-predict.service`:
 
 ```ini
 [Unit]
@@ -357,76 +281,34 @@ WantedBy = multi-user.target
 
 ## Reproducibility
 
-This project is designed for full reproducibility at multiple levels:
+Everything is configuration-driven. All hyperparameters, model architecture, and training settings live in `config.yml`.
+Random seeds are set globally (`RANDOM_STATE=41`) for deterministic splits, and preprocessing pipelines are serialized
+alongside models. Dependencies are locked via `uv.lock`.
 
-### Pipeline Reproducibility
+MLFlow logs every training run with parameters, metrics, and artifacts. You can roll back to any previous model version.
+Trained models are stored in Unity Catalog with lineage tracking, and all API instances pull from the same registry, so
+load-balanced servers stay in sync without manual file transfers.
 
-#### Configuration-Driven Design
-
-- All hyperparameters, model architecture, and training settings are controlled via `config.yml`
-- Random seeds are set globally (`RANDOM_STATE=41`) for deterministic train/test splits
-- Preprocessing pipelines (scaling, imputation) are serialized and versioned alongside models
-
-#### Dependency Locking
-
-- Dependencies locked via `uv.lock` for exact version reproducibility
-- All external data sources (GeoIP, StopForumSpam) are automatically downloaded and versioned
-
-#### Experiment Tracking
-
-- MLFlow logs all training runs with parameters, metrics, and artifacts
-- Model versioning enables rollback to any previous trained model
-- Every training run is tagged with dataset size, feature set, and threshold
-
-### Deployment Reproducibility
-
-#### MLFlow Model Registry
-
-- Trained models are stored in Unity Catalog with full lineage tracking
-- API automatically loads the latest registered model version
-- Load-balanced servers stay synchronized by pulling from the same MLFlow registry
-- No manual model file transfers needed - deploy anywhere with MLFlow credentials
-
-#### Stateless API Design
-
-- API servers can be restarted, scaled, or replaced without losing model state
-- All model artifacts (scaler, preprocessor, calibrator) are packaged together
-
-### Dataset Reproducibility
-
-#### Important Note on Data Privacy
-
-This system learns personalized risk profiles for each user. The training data consists of real authentication events
-that cannot be publicly shared due to privacy constraints. However, the system is fully reproducible for any
-organization with Shibboleth IdP:
-
-- Data Collection: Enable passthrough mode to collect your own login events
-- Heuristic: Use `db/bootstrap_scores.py` to accurately bootstrap initial risk scores.
-- Synthetic Generation: Use `db/create_synthetic_data.py` to generate realistic attack patterns
-- Training: Run `uv run train` to build a personalized model for your user base
-
-The methodology is reproducible, even though the exact dataset is institution-specific. Any Shibboleth deployment
-can replicate this pipeline with their own data.
+The training data is real authentication events and can't be publicly shared for privacy reasons, but the pipeline
+itself is fully reproducible for any Shibboleth deployment: deploy the API, let logins accumulate, then run
+`uv run train`. The methodology is the same regardless of institution.
 
 ## Considerations
 
-It is highly recommended to load balance this application with software such as Caddy. Then, configure the Shibboleth
-plugin to point to your load balanced endpoint. If using MLFlow mode, load balancing is fully supported with no
-additional configuration needed, as all servers will automatically stay synchronized through MLFlow.
+You should load balance this application with something like Caddy, then point the Shibboleth plugin at your
+load-balanced endpoint. If you're using MLFlow mode, all servers stay in sync automatically.
 
-There is a PostgresSQL database requirement. It is very easy to shard the database with Citus and what I recommend. This
-will perform extremely well. You can scale it as much as you need depending on how active your Shibboleth IdP instance
-is. I recommend purging logins after a year (except malicious or human verified ones). Since this isn't time series
-data, there isn't a problem with having a cluster of older malicious logins while accumulating newer login data.
+There is a PostgresSQL requirement. I recommend sharding with Citus, which works well and scales to whatever your
+Shibboleth IdP needs.
 
-Each time you start the web application, it will check for updates from MaxMind and StopForumSpam for new files. If any
-are found, they will automatically be downloaded. It will also try and connect to the database and run a simple query.
-This is called a "preflight check" and confirms your environment is set up correctly.
+Each time you start the web application, it checks for updates from MaxMind and StopForumSpam and downloads new files
+if available. It also connects to the database and runs a simple query as a preflight check to confirm your environment
+is set up correctly.
 
 ## License
 
-This software is licensed under the **PolyForm Noncommercial License 1.0.0**. You may use, copy, and modify this
-software for **noncommercial purposes only**. See [LICENSE.md](LICENSE.md) for the full license text.
+This software is licensed under the PolyForm Noncommercial License 1.0.0. You may use, copy, and modify this
+software for noncommercial purposes only. See [LICENSE.md](LICENSE.md) for the full license text.
 
 Copyright © 2025-2026 Sam Packer. Released under the PolyForm Noncommercial License 1.0.0.
 

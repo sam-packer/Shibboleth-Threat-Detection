@@ -33,10 +33,8 @@ data:
     - touch_support
     - webauthn_supported
 
-  # Fraction of data held out for final evaluation
-  test_size: 0.2
-  # Fraction of training data for hyperparameter tuning
-  validation_size: 0.15
+  # Fraction of training data used for validation (early stopping)
+  validation_size: 0.2
   # Seed for reproducibility (same split every run)
   random_state: 41
 
@@ -50,52 +48,46 @@ preprocessing:
     scaler: "rba_scaler.pkl"
     user_map: "rba_user_map.pkl"
     preprocessor: "rba_preprocessor.pkl"
-    calibrator: "rba_calibrator.pkl"
+    centroids: "rba_centroids.pkl"
+    distance_stats: "rba_distance_stats.pkl"
     threshold: "threshold.txt"
 
 model:
   # Directory to save model artifacts
   output_dir: "nn_data"
   # Concatenates with output_dir
-  # Example: nn_data/best_rba_model.pt
-  checkpoint: "best_rba_model.pt"
+  # Example: nn_data/best_rba_encoder.pt
+  checkpoint: "best_rba_encoder.pt"
 
-  # Minimum size for user embedding vectors
-  min_embed_dim: 4
-  # Maximum size for user embedding vectors
-  max_embed_dim: 64
-  # How embedding size scales with user count
-  embed_dim_scale: log2
-  # How many logins a user needs to have their own embedding
+  # How many logins a user needs to have their own centroid
   min_user_events: 10
+  # Minimum logins per (user, device_category) pair for a device-level centroid
+  min_device_events: 10
 
   architecture:
-    # Neurons per layer
-    hidden_layers: [ 32, 16 ]
+    # Neurons per hidden layer
+    hidden_layers: [64, 48]
+    # Dimensionality of the output embedding
+    embed_dim: 32
     # Fraction of neurons randomly disabled during training
-    dropout: 0.2
+    dropout: 0.15
 
 training:
   # Maximum training iterations over the full dataset
   num_epochs: 500
+  # Number of samples per training batch
+  batch_size: 256
+  # Margin for triplet loss (minimum separation between positive and negative pairs)
+  triplet_margin: 0.3
   # Step size for weight updates (too high = unstable, too low = slow)
-  learning_rate: 0.005
+  learning_rate: 0.001
   # Stop if no improvement for this many epochs
-  patience: 5
+  patience: 10
   # Minimum change to count as "improvement"
-  min_delta: 1e-6
+  min_delta: 1e-4
   runtime:
     # Hardware to train on
     device: "auto"  # auto | cuda | mps | cpu
-
-evaluation:
-  threshold_sweep:
-    # Lowest threshold to test
-    start: 0.0
-    # Highest threshold to test
-    end: 1.0
-    # Number of thresholds to evaluate between start and end
-    steps: 201
 
 mlflow:
   # Whether to log runs to MLFlow
@@ -132,8 +124,6 @@ api:
   threads: 4
   # Verbosity: debug, info, warning, error
   log_level: "info"
-  # Passthrough mode is used for collecting data so you can bootstrap and train your model
-  passthrough_mode: false
 
 # Do not change
 config_version: "1"

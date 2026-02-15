@@ -46,7 +46,7 @@ def fetch_models_from_mlflow():
             run = client.get_run(v.run_id)
             metrics = run.data.metrics or {}
 
-            threshold = metrics.get("best_threshold")
+            threshold = metrics.get("global_anomaly_threshold")
 
             try:
                 threshold = float(threshold) if threshold is not None else None
@@ -55,7 +55,7 @@ def fetch_models_from_mlflow():
 
             results.append({
                 "version": version_num,
-                "best_threshold": threshold,
+                "anomaly_threshold": threshold,
             })
 
         return sorted(results, key=lambda x: x["version"])

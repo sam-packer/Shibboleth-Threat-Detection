@@ -1,12 +1,9 @@
-def ensemble_threat_score(nn_score: float, ip_risk_score: float, passthrough: bool = False) -> float:
+def ensemble_threat_score(anomaly_score: float, ip_risk_score: float) -> float:
     """
-    Combine neural network and IP risk into a single threat score.
-    Escalates on toxic IPs, never depresses the neural score.
+    Combine anomaly score and IP risk into a single threat score.
+    Escalates on toxic IPs, never depresses the anomaly score.
     """
-    if passthrough or nn_score < 0:
-        return float(ip_risk_score)
-
-    base = float(nn_score)
+    base = float(anomaly_score)
     if ip_risk_score >= 1.0:
         # Escalate 25% toward 1.0
         threat_score = min(1.0, base + 0.25 * (1.0 - base))

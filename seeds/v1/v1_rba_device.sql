@@ -1,5 +1,4 @@
--- OUTDATED SCRIPT! DO NOT USE TO SEED YOUR DATABASE!
--- Use this if you are starting your data collection with metrics version v3
+-- Use this if you are starting your data collection with metrics version v1
 create table rba_device
 (
     device_uuid uuid                                   not null

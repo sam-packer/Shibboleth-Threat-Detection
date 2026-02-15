@@ -1,25 +1,22 @@
 import os
 import logging
+import math
 
 import mlflow
 import numpy as np
 import torch
 import joblib
 from mlflow import MlflowClient
-from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
 from helpers.globals import resolve_path, select_device, cfg
 from sklearn.preprocessing import StandardScaler
 
-from nn_scripts.calibrator import PlattCalibrator
 from nn_scripts.feature_preprocessor import FeaturePreprocessor
-from nn_scripts.model import SimpleRBAModel
+from nn_scripts.model import BehavioralEncoder
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
-
-POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
 
 # File based environment
 MODEL_PATH = resolve_path("NN_MODEL_PATH",
@@ -41,11 +38,15 @@ PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH",
                                               cfg("preprocessing.artifacts.preprocessor"))
                                  )
 
-CALIBRATOR_PATH = resolve_path("NN_CALIBRATOR_PATH",
-                               os.path.join(cfg("model.output_dir"), cfg("preprocessing.artifacts.calibrator"))
-                               )
+CENTROIDS_PATH = resolve_path("NN_CENTROIDS_PATH",
+                              os.path.join(cfg("model.output_dir"),
+                                           cfg("preprocessing.artifacts.centroids"))
+                              )
 
-USER_THRESHOLD = cfg("model.min_user_events")
+DISTANCE_STATS_PATH = resolve_path("NN_DISTANCE_STATS_PATH",
+                                   os.path.join(cfg("model.output_dir"),
+                                                cfg("preprocessing.artifacts.distance_stats"))
+                                   )
 
 # MLFlow environment
 ENABLE_MLFLOW = cfg("mlflow.enable")
@@ -56,23 +57,18 @@ UC_SCHEMA = cfg("mlflow.uc_schema")
 UC_MODEL_NAME = cfg("mlflow.uc_model_name")
 FULL_UC_MODEL_NAME = f"{UC_CATALOG}.{UC_SCHEMA}.{UC_MODEL_NAME}"
 
-engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
-
 _device = select_device()
 _model = None
 _model_version: int | None = None
 _scaler: StandardScaler | None = None
-_calibrator: PlattCalibrator | None = None
 _user_to_id = {}
 _preprocessor: FeaturePreprocessor | None = None
+_centroids: dict | None = None
+_distance_stats: dict | None = None
 
 
 def _load_from_mlflow():
-    """
-    Attempts to load the Model and auxiliary artifacts from MLFlow Registry.
-    Returns True if successful, False otherwise.
-    """
-    global _model, _model_version, _scaler, _calibrator, _user_to_id, _num_users, _preprocessor, _embed_dim
+    global _model, _model_version, _scaler, _user_to_id, _preprocessor, _centroids, _distance_stats
 
     if not ENABLE_MLFLOW:
         return False
@@ -92,7 +88,6 @@ def _load_from_mlflow():
             logging.warning(f"[NN] No versions found for {FULL_UC_MODEL_NAME} in MLFlow.")
             return False
 
-        # sort by version number to get the latest
         latest_version_obj = max(versions, key=lambda v: int(v.version))
         run_id = latest_version_obj.run_id
         version_num = latest_version_obj.version
@@ -104,24 +99,14 @@ def _load_from_mlflow():
         scaler_p = os.path.join(local_artifacts_dir, "rba_scaler.pkl")
         preproc_p = os.path.join(local_artifacts_dir, "rba_preprocessor.pkl")
         usermap_p = os.path.join(local_artifacts_dir, "rba_user_map.pkl")
-        calibrator_p = os.path.join(local_artifacts_dir, "rba_calibrator.pkl")
+        centroids_p = os.path.join(local_artifacts_dir, "rba_centroids.pkl")
+        dist_stats_p = os.path.join(local_artifacts_dir, "rba_distance_stats.pkl")
 
         _scaler = joblib.load(scaler_p)
         _preprocessor = joblib.load(preproc_p)
-        _calibrator = PlattCalibrator.load(calibrator_p)
         _user_to_id = joblib.load(usermap_p)
-        _num_users = len(_user_to_id)
-
-        embed_dim_scale = cfg("model.embed_dim_scale")
-        min_embed = cfg("model.min_embed_dim")
-        max_embed = cfg("model.max_embed_dim")
-
-        if embed_dim_scale == "log2":
-            raw = np.log2(_num_users)
-        else:
-            raw = embed_dim_scale
-
-        _embed_dim = int(min(max(raw, min_embed), max_embed))
+        _centroids = joblib.load(centroids_p)
+        _distance_stats = joblib.load(dist_stats_p)
 
         model_uri = f"models:/{FULL_UC_MODEL_NAME}/{version_num}"
         loaded_model = mlflow.pytorch.load_model(model_uri, map_location=_device)
@@ -130,7 +115,8 @@ def _load_from_mlflow():
         _model.eval()
         _model_version = int(version_num)
 
-        logging.info(f"[NN] Successfully loaded from MLFlow (Ver: {version_num}). Users: {_num_users}")
+        logging.info(f"[NN] Successfully loaded from MLFlow (Ver: {version_num}). "
+                     f"Users: {len(_user_to_id)}, Centroids: {len(_centroids) - 1}")
         return True
 
     except Exception as e:
@@ -139,39 +125,22 @@ def _load_from_mlflow():
 
 
 def _load_from_local():
-    """
-    Falls back to loading from local file paths defined in .env.
-    """
-    global _model, _scaler, _calibrator, _user_to_id, _num_users, _preprocessor, _embed_dim
+    global _model, _scaler, _user_to_id, _preprocessor, _centroids, _distance_stats
 
     logging.info("[NN] Loading from local file system...")
 
     try:
         _scaler = joblib.load(SCALER_PATH)
         _preprocessor = joblib.load(PREPROCESSOR_PATH)
-        _calibrator = PlattCalibrator.load(CALIBRATOR_PATH)
         _user_to_id = joblib.load(USER_MAP_PATH)
+        _centroids = joblib.load(CENTROIDS_PATH)
+        _distance_stats = joblib.load(DISTANCE_STATS_PATH)
     except FileNotFoundError as e:
         logging.error(f"[NN] CRITICAL: Missing local artifact: {e}")
         return
 
-    _num_users = len(_user_to_id)
-    if _num_users == 0:
-        logging.error("[NN] User map is empty.")
-        return
-
-    embed_dim_scale = cfg("model.embed_dim_scale")
-    min_embed = cfg("model.min_embed_dim")
-    max_embed = cfg("model.max_embed_dim")
-
-    if embed_dim_scale == "log2":
-        raw = np.log2(_num_users)
-    else:
-        raw = embed_dim_scale
-
-    _embed_dim = int(min(max(raw, min_embed), max_embed))
-
-    _model = SimpleRBAModel(input_dim=len(cfg("data.feature_columns")), num_users=_num_users, embed_dim=_embed_dim)
+    input_dim = len(cfg("data.feature_columns"))
+    _model = BehavioralEncoder(input_dim=input_dim)
     try:
         _model.load_state_dict(torch.load(MODEL_PATH, map_location=_device))
     except FileNotFoundError:
@@ -181,7 +150,7 @@ def _load_from_local():
 
     _model.to(_device)
     _model.eval()
-    logging.info(f"[NN] Local model loaded. Users: {_num_users} | Embed dim: {_embed_dim}")
+    logging.info(f"[NN] Local model loaded. Users: {len(_user_to_id)} | Centroids: {len(_centroids) - 1}")
 
 
 def get_model_version() -> int | None:
@@ -189,9 +158,6 @@ def get_model_version() -> int | None:
 
 
 def load_model_and_scaler():
-    """
-    Main entry point to load resources. Tries MLFlow first, then Local.
-    """
     global _model, _scaler, _preprocessor
 
     if _model is not None and _scaler is not None and _preprocessor is not None:
@@ -203,39 +169,30 @@ def load_model_and_scaler():
         _load_from_local()
 
 
-def user_has_sufficient_data(username: str) -> bool:
-    """
-    Check if a given user has enough login history for a personalized embedding.
-    """
-    try:
-        with engine.connect() as conn:
-            result = conn.execute(
-                text(f"""
-                     SELECT COUNT(*) AS n
-                     FROM {cfg("data.table")}
-                     WHERE username = :username
-                       AND nn_score >= 0.0
-                     """),
-                {"username": username}
-            ).fetchone()
+def _distance_to_score(distance: float, stats: dict) -> float:
+    mean_d = stats["mean"]
+    p95 = stats["p95"]
 
-        count = result.n if result else 0
-        return count >= USER_THRESHOLD
-    except Exception as e:
-        logging.warning(f"[NN] Failed to check user data sufficiency: {e}")
-        return False
+    if distance <= mean_d:
+        return 0.05
+
+    if distance <= p95:
+        # Linear ramp from 0.05 to 0.50
+        t = (distance - mean_d) / (p95 - mean_d + 1e-8)
+        return 0.05 + t * 0.45
+
+    # Exponential escalation toward 1.0 for distance > p95
+    excess = (distance - p95) / (p95 + 1e-8)
+    score = 0.50 + 0.50 * (1.0 - math.exp(-3.0 * excess))
+    return min(score, 1.0)
 
 
-def compute_nn_score(username: str, features: dict) -> float:
-    """
-    Compute neural network threat score for a single login event.
-    If user does not have sufficient data, defaults to the global model.
-    """
+def compute_anomaly_score(username: str, device_category: str, features: dict) -> float:
     try:
         load_model_and_scaler()
 
-        if _model is None or _scaler is None or _preprocessor is None:
-            logging.error("[NN] Model/scaler/preprocessor not loaded. Returning neutral score.")
+        if _model is None or _scaler is None or _preprocessor is None or _centroids is None:
+            logging.error("[NN] Model/scaler/preprocessor/centroids not loaded. Returning neutral score.")
             return 0.5
 
         features = _preprocessor.transform_single(features, cfg("data.feature_columns"))
@@ -243,31 +200,33 @@ def compute_nn_score(username: str, features: dict) -> float:
         # Prepare input tensor
         X = np.array([[features[col] for col in cfg("data.feature_columns")]], dtype=np.float32)
         X_scaled = _scaler.transform(X)
-        X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(_device)
 
-        # Determine if this user qualifies for an embedding
-        if username in _user_to_id and user_has_sufficient_data(username):
-            user_id = torch.tensor([_user_to_id[username]], dtype=torch.long)
-        else:
-            user_id = None  # use global model path
-
-        # Forward pass
+        # Forward pass to get embedding
         with torch.no_grad():
-            y_pred = _model(X_tensor, user_id)
-            score = float(y_pred.item())
+            embedding = _model(X_tensor).cpu().numpy().flatten()
 
-        raw_score = max(0.0, min(score, 1.0))
+        # Three-level centroid lookup:
+        # 1. (username, device_category) — most specific
+        # 2. username — user-level fallback
+        # 3. __population__ — final fallback
+        device_key = (username, device_category)
+        if device_key in _centroids:
+            centroid = _centroids[device_key]
+            stats = _distance_stats.get(device_key, _distance_stats["__population__"])
+        elif username in _centroids:
+            centroid = _centroids[username]
+            stats = _distance_stats.get(username, _distance_stats["__population__"])
+        else:
+            centroid = _centroids["__population__"]
+            stats = _distance_stats["__population__"]
 
-        # Clamp and smooth the score
-        if _calibrator is not None:
-            try:
-                calibrated_score = _calibrator.transform(np.array([score]))[0]
-                score = max(0.0, min(float(calibrated_score), 1.0))
-                return score
-            except Exception as e:
-                logging.error(f"[NN] Calibration failed, using raw score: {e}")
+        # Cosine distance (for L2-normalized vectors)
+        distance = float(1.0 - np.dot(embedding, centroid))
+        distance = max(0.0, min(distance, 2.0))
 
-        return raw_score
+        score = _distance_to_score(distance, stats)
+        return max(0.0, min(score, 1.0))
 
     except Exception as e:
         logging.error(f"[NN] Inference failed: {e}", exc_info=True)
@@ -275,11 +234,8 @@ def compute_nn_score(username: str, features: dict) -> float:
 
 
 def test_inference():
-    """
-    Local manual test utility.
-    """
     dummy_input = {col: np.random.rand() for col in cfg("data.feature_columns")}
-    score = compute_nn_score("demo_user", dummy_input)
+    score = compute_anomaly_score("demo_user", "desktop", dummy_input)
     print(f"NN Score for demo_user: {score:.4f}")
 
 

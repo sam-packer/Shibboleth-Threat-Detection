@@ -1,9 +1,9 @@
--- Use this if you are starting your data collection with metrics version v4
+-- Use this if you are starting your data collection with metrics version v1
 create table rba_scores
 (
     login_id          bigint not null,
     username          text   not null,
-    nn_score          double precision,
+    anomaly_score     double precision,
     ip_risk_score     double precision,
     impossible_travel double precision,
     final_score       double precision,

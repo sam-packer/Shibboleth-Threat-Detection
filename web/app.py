@@ -4,9 +4,10 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from helpers.globals import cfg
 from helpers.mlflow_helper import MODEL_CACHE, MODEL_CACHE_LOCK, _async_refresh_wrapper, initialize_model_cache
+from helpers.device_classifier import classify_device
 from nn_scripts.ensembler import ensemble_threat_score
 from external_data.geoip_helper import enrich_with_geoip, ensure_geoip_up_to_date
-from nn_scripts.nn_helper import compute_nn_score, load_model_and_scaler, get_model_version
+from nn_scripts.nn_helper import compute_anomaly_score, load_model_and_scaler, get_model_version
 from external_data.stopforumspam_helper import ip_in_toxic_list, ensure_sfs_up_to_date
 from db.db_helper import record_login_with_scores, db_health_check, init_db_schema
 
@@ -16,8 +17,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] [%(levelname)s] %(message)s"
 )
-
-PASSTHROUGH_MODE = cfg("api.passthrough_mode", False)
 
 # Preflight check
 ensure_geoip_up_to_date()
@@ -48,17 +47,21 @@ def score_endpoint():
         if not metrics or not isinstance(metrics, dict):
             return jsonify({"error": "Invalid JSON"}), 400
 
+        # Classify device from User-Agent + metrics
+        user_agent = request.headers.get("User-Agent", "")
+        device_category = classify_device(user_agent, metrics)
+
         # Enrich with GeoIP
         enriched = enrich_with_geoip(metrics, client_ip)
         enriched["ip_address"] = client_ip
         enriched["username"] = username
         enriched["device_uuid"] = device_uuid
+        enriched["device_category"] = device_category
 
-        nn_score = compute_nn_score(username, enriched)
+        anomaly_score = compute_anomaly_score(username, device_category, enriched)
         ip_risk_score = 1.0 if ip_in_toxic_list(client_ip) else 0.0
-        impossible_travel = -1
 
-        threat_score = ensemble_threat_score(nn_score, ip_risk_score, PASSTHROUGH_MODE)
+        threat_score = ensemble_threat_score(anomaly_score, ip_risk_score)
 
         # Insert into DB
         login_id = record_login_with_scores(
@@ -66,9 +69,10 @@ def score_endpoint():
             username=username,
             ip_address=client_ip,
             device_uuid=device_uuid,
-            nn_score=nn_score,
+            device_category=device_category,
+            anomaly_score=anomaly_score,
             ip_risk_score=ip_risk_score,
-            impossible_travel=impossible_travel,
+            impossible_travel=-1,
             final_score=threat_score
         )
 
@@ -108,9 +112,7 @@ def main():
     port = cfg("api.port")
     debug_mode = False
 
-    logging.info(
-        f"Starting Flask on {host}:{port}, debug={debug_mode}, passthrough={PASSTHROUGH_MODE}"
-    )
+    logging.info(f"Starting Flask on {host}:{port}, debug={debug_mode}")
 
     app.run(host=host, port=port, debug=debug_mode)
 

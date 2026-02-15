@@ -1,24 +1,21 @@
 import logging
 import os
 from contextlib import nullcontext
+
 import mlflow
 import numpy as np
 import pandas as pd
 import torch
 from mlflow import MlflowClient
-from sklearn.metrics import f1_score, precision_score, recall_score
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from torch import nn
+from torch.utils.data import Dataset, DataLoader
 import joblib
 
-from nn_scripts.calibrator import PlattCalibrator
-from nn_scripts.ensembler import ensemble_threat_score
 from nn_scripts.feature_preprocessor import FeaturePreprocessor
 from helpers.globals import select_device, resolve_path, cfg
-from nn_scripts.model import SimpleRBAModel
+from nn_scripts.model import BehavioralEncoder
 
 load_dotenv()
 
@@ -28,12 +25,11 @@ engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=Tr
 _device = select_device()
 
 FEATURE_COLUMNS = cfg("data.feature_columns")
-TEST_SIZE = cfg("data.test_size")
 VAL_SIZE = cfg("data.validation_size")
 RANDOM_STATE = cfg("data.random_state")
 LIMIT = cfg("data.limit")
-
-EVAL_CFG = cfg("evaluation.threshold_sweep")
+MIN_USER_EVENTS = cfg("model.min_user_events")
+MIN_DEVICE_EVENTS = cfg("model.min_device_events")
 
 # Paths
 MODEL_PATH = resolve_path("NN_MODEL_PATH", os.path.join(cfg("model.output_dir"), cfg("model.checkpoint")))
@@ -43,8 +39,11 @@ USER_MAP_PATH = resolve_path("NN_USER_MAP_PATH",
                              os.path.join(cfg("preprocessing.output_dir"), cfg("preprocessing.artifacts.user_map")))
 PREPROCESSOR_PATH = resolve_path("NN_PREPROCESSOR_PATH", os.path.join(cfg("preprocessing.output_dir"),
                                                                       cfg("preprocessing.artifacts.preprocessor")))
-CALIBRATOR_PATH = resolve_path("NN_CALIBRATOR_PATH",
-                               os.path.join(cfg("preprocessing.output_dir"), cfg("preprocessing.artifacts.calibrator")))
+CENTROIDS_PATH = resolve_path("NN_CENTROIDS_PATH",
+                              os.path.join(cfg("preprocessing.output_dir"), cfg("preprocessing.artifacts.centroids")))
+DISTANCE_STATS_PATH = resolve_path("NN_DISTANCE_STATS_PATH",
+                                   os.path.join(cfg("preprocessing.output_dir"),
+                                                cfg("preprocessing.artifacts.distance_stats")))
 
 os.makedirs(cfg("preprocessing.output_dir"), exist_ok=True)
 os.makedirs(cfg("model.output_dir"), exist_ok=True)
@@ -76,7 +75,6 @@ def set_global_seeds(seed: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    # Make PyTorch deterministic (at some performance cost)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
@@ -84,19 +82,57 @@ def set_global_seeds(seed: int):
 set_global_seeds(RANDOM_STATE)
 
 
+class TripletDataset(Dataset):
+    def __init__(self, features: np.ndarray, user_ids: np.ndarray):
+        self.features = features.astype(np.float32)
+        self.user_ids = user_ids
+
+        # Build per-user index for O(1) positive/negative sampling
+        self.user_indices: dict[int, list[int]] = {}
+        for idx, uid in enumerate(user_ids):
+            self.user_indices.setdefault(uid, []).append(idx)
+
+        self.all_users = list(self.user_indices.keys())
+
+    def __len__(self):
+        return len(self.features)
+
+    def __getitem__(self, idx):
+        anchor = self.features[idx]
+        anchor_user = self.user_ids[idx]
+
+        # Positive: same user, different sample
+        pos_candidates = self.user_indices[anchor_user]
+        pos_idx = idx
+        if len(pos_candidates) > 1:
+            while pos_idx == idx:
+                pos_idx = pos_candidates[np.random.randint(len(pos_candidates))]
+        positive = self.features[pos_idx]
+
+        # Negative: different user
+        neg_user = anchor_user
+        while neg_user == anchor_user:
+            neg_user = self.all_users[np.random.randint(len(self.all_users))]
+        neg_candidates = self.user_indices[neg_user]
+        neg_idx = neg_candidates[np.random.randint(len(neg_candidates))]
+        negative = self.features[neg_idx]
+
+        return (
+            torch.tensor(anchor, dtype=torch.float32),
+            torch.tensor(positive, dtype=torch.float32),
+            torch.tensor(negative, dtype=torch.float32),
+        )
+
+
 def load_training_data(limit: int):
     query = text(f"""
-        SELECT username, {', '.join(FEATURE_COLUMNS)}, nn_score, platform,
-               human_verified, impossible_travel
+        SELECT username, {', '.join(FEATURE_COLUMNS)}, platform, device_category
         FROM {cfg("data.table")}
-        WHERE nn_score >= 0.0
         LIMIT :limit
     """)
     with engine.connect() as conn:
         df = pd.read_sql(query, conn, params={"limit": limit})
         df = df.sample(frac=1, random_state=RANDOM_STATE).reset_index(drop=True)
-        df["human_verified"] = df.get("human_verified", False).fillna(False).astype(bool)
-        df["impossible_travel"] = df.get("impossible_travel", False).fillna(False).astype(bool)
         mlflow.log_param("source_query", str(query))
         mlflow.log_metric("n_rows", len(df))
     print(f"Loaded {len(df)} rows.")
@@ -108,134 +144,133 @@ def preprocess_training_data(df):
     preprocessor.fit(df, FEATURE_COLUMNS)
     df = preprocessor.transform_df(df, FEATURE_COLUMNS)
 
+    # Filter to users with enough events
+    user_counts = df["username"].value_counts()
+    eligible_users = user_counts[user_counts >= MIN_USER_EVENTS].index
+    df = df[df["username"].isin(eligible_users)].reset_index(drop=True)
+    print(f"After filtering to users with >= {MIN_USER_EVENTS} events: {len(df)} rows, {len(eligible_users)} users.")
+
     # Encode usernames
     unique_users = df["username"].unique()
     user_to_id = {u: i for i, u in enumerate(unique_users)}
     df["user_id"] = df["username"].map(user_to_id)
 
-    # Ground truth
-    df["is_true_threat"] = (
-            (df["nn_score"] == 1.0) & (df["human_verified"] == True)
-            | (df["impossible_travel"] == True)
-    ).astype(int)
-
     X = df[FEATURE_COLUMNS].astype(np.float32)
-    y = df["is_true_threat"].astype(np.float32)
-    user_ids = df["user_id"].astype(np.int64)
-    true_labels = df["is_true_threat"].values
-
-    # Split 1: Separate the holdout test set (model doesn't see this)
-    X_temp, X_test, y_temp, y_test, user_temp, user_test, true_temp, true_labels_test = train_test_split(
-        X, y, user_ids, true_labels,
-        test_size=TEST_SIZE,
-        random_state=RANDOM_STATE,
-        stratify=true_labels
-    )
-
-    # Split 2: Separate train from validation (Model sees val for early stopping)
-    X_train, X_val, y_train, y_val, user_train, user_val, true_labels_train, true_labels_val = train_test_split(
-        X_temp, y_temp, user_temp, true_temp,
-        test_size=VAL_SIZE,
-        random_state=RANDOM_STATE,
-        stratify=true_temp
-    )
-
-    print(f"Split Sizes - Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
+    user_ids = df["user_id"].astype(np.int64).values
+    device_categories = df["device_category"].values  # may contain None/NaN
 
     # Normalize numeric features
     scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X.values)
 
-    # Fit on train
-    X_train_scaled = scaler.fit_transform(X_train.values)
-
-    # Apply that same math to validation and test sets
-    X_val_scaled = scaler.transform(X_val.values)
-    X_test_scaled = scaler.transform(X_test.values)
-
-    # Convert to tensors
-    train_tensors = (
-        torch.tensor(X_train_scaled, dtype=torch.float32),
-        torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1),
-        torch.tensor(user_train.values, dtype=torch.long)
-    )
-
-    val_tensors = (
-        torch.tensor(X_val_scaled, dtype=torch.float32),
-        torch.tensor(y_val.values, dtype=torch.float32).unsqueeze(1),
-        torch.tensor(user_val.values, dtype=torch.long),
-        true_labels_val  # Keep raw labels for F1 calc
-    )
-
-    test_tensors = (
-        torch.tensor(X_test_scaled, dtype=torch.float32),
-        torch.tensor(y_test.values, dtype=torch.float32).unsqueeze(1),
-        torch.tensor(user_test.values, dtype=torch.long),
-        true_labels_test  # Keep raw labels for F1 calc
-    )
-
-    return (
-        train_tensors, val_tensors, test_tensors,
-        scaler, len(unique_users), user_to_id, preprocessor
-    )
+    return X_scaled, user_ids, device_categories, scaler, user_to_id, preprocessor
 
 
-def train_neural_network(train_tensors, val_tensors, num_users, checkpoint_path):
-    X_train, y_train, user_train = train_tensors
-    X_val, y_val, user_val, _ = val_tensors  # Ignore true_labels for training loop
-
-    raw = np.log2(num_users) if cfg("model.embed_dim_scale") == "log2" else cfg("model.embed_dim_scale")
-    embed_dim = int(min(max(raw, cfg("model.min_embed_dim")), cfg("model.max_embed_dim")))
-
-    min_delta = float(cfg("training.min_delta"))
+def train_encoder(X_scaled, user_ids, checkpoint_path):
+    batch_size = int(cfg("training.batch_size", 256))
+    triplet_margin = float(cfg("training.triplet_margin", 0.3))
     num_epochs = int(cfg("training.num_epochs"))
     learning_rate = float(cfg("training.learning_rate"))
     patience = int(cfg("training.patience"))
+    min_delta = float(cfg("training.min_delta"))
 
-    mlflow.log_param("embed_dim", embed_dim)
+    mlflow.log_param("batch_size", batch_size)
+    mlflow.log_param("triplet_margin", triplet_margin)
     mlflow.log_param("num_epochs", num_epochs)
     mlflow.log_param("learning_rate", learning_rate)
     mlflow.log_param("patience", patience)
 
-    model = SimpleRBAModel(input_dim=X_train.shape[1], num_users=num_users, embed_dim=embed_dim).to(_device)
+    # Split into train/val
+    n = len(X_scaled)
+    indices = np.random.permutation(n)
+    val_count = int(n * VAL_SIZE)
+    val_idx, train_idx = indices[:val_count], indices[val_count:]
 
-    criterion = nn.BCELoss()
+    X_train, X_val = X_scaled[train_idx], X_scaled[val_idx]
+    uid_train, uid_val = user_ids[train_idx], user_ids[val_idx]
+
+    train_dataset = TripletDataset(X_train, uid_train)
+    val_dataset = TripletDataset(X_val, uid_val)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+
+    input_dim = X_scaled.shape[1]
+    model = BehavioralEncoder(input_dim=input_dim).to(_device)
+
+    criterion = torch.nn.TripletMarginLoss(margin=triplet_margin, p=2)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-    X_train, y_train, user_train = X_train.to(_device), y_train.to(_device), user_train.to(_device)
-    X_val, y_val, user_val = X_val.to(_device), y_val.to(_device), user_val.to(_device)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=3)
 
     best_val_loss = float("inf")
     epochs_no_improve = 0
 
     print(f"Starting training for up to {num_epochs} epochs...")
+    print(f"  Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
 
     for epoch in range(num_epochs):
         model.train()
-        optimizer.zero_grad()
+        train_losses = []
+        for anchor, positive, negative in train_loader:
+            anchor = anchor.to(_device)
+            positive = positive.to(_device)
+            negative = negative.to(_device)
 
-        loss = criterion(model(X_train, user_train), y_train)
-        loss.backward()
-        optimizer.step()
+            a_emb = model(anchor)
+            p_emb = model(positive)
+            n_emb = model(negative)
 
+            loss = criterion(a_emb, p_emb, n_emb)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            train_losses.append(loss.item())
+
+        avg_train_loss = np.mean(train_losses)
+
+        # Validation
         model.eval()
+        val_losses = []
+        all_embeddings = []
         with torch.no_grad():
-            val_loss = criterion(model(X_val, user_val), y_val)
+            for anchor, positive, negative in val_loader:
+                anchor = anchor.to(_device)
+                positive = positive.to(_device)
+                negative = negative.to(_device)
 
-        mlflow.log_metric("train_loss", loss.item(), step=epoch)
-        mlflow.log_metric("val_loss", val_loss.item(), step=epoch)
+                a_emb = model(anchor)
+                p_emb = model(positive)
+                n_emb = model(negative)
 
-        if val_loss.item() < best_val_loss - min_delta:
-            best_val_loss = val_loss.item()
+                val_loss = criterion(a_emb, p_emb, n_emb)
+                val_losses.append(val_loss.item())
+                all_embeddings.append(a_emb.cpu())
+
+        avg_val_loss = np.mean(val_losses)
+        scheduler.step(avg_val_loss)
+
+        # Collapse health: std of embedding norms (should stay near 1.0 for L2-normalized)
+        if all_embeddings:
+            cat_emb = torch.cat(all_embeddings, dim=0)
+            embedding_std = cat_emb.std(dim=0).mean().item()
+        else:
+            embedding_std = 0.0
+
+        mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
+        mlflow.log_metric("val_loss", avg_val_loss, step=epoch)
+        mlflow.log_metric("embedding_std", embedding_std, step=epoch)
+
+        if avg_val_loss < best_val_loss - min_delta:
+            best_val_loss = avg_val_loss
             epochs_no_improve = 0
             torch.save(model.state_dict(), checkpoint_path)
         else:
             epochs_no_improve += 1
 
-        # Only print every 5 to the console
         if (epoch + 1) % 5 == 0 or epoch == 0:
             print(f"Epoch [{epoch + 1}/{num_epochs}] "
-                  f"Train Loss: {loss.item():.5f} | Val Loss: {val_loss.item():.5f} "
-                  f"| Patience: {epochs_no_improve}/{patience}")
+                  f"Train Loss: {avg_train_loss:.5f} | Val Loss: {avg_val_loss:.5f} "
+                  f"| Emb Std: {embedding_std:.4f} | Patience: {epochs_no_improve}/{patience}")
 
         if epochs_no_improve >= patience:
             print(f"Early stopping after {epoch + 1} epochs (best val loss = {best_val_loss:.5f}).")
@@ -246,81 +281,107 @@ def train_neural_network(train_tensors, val_tensors, num_users, checkpoint_path)
     return model
 
 
-def find_best_threshold(model, val_tensors):
-    """
-    Tunes threshold using validation set + Platt calibration.
-    """
-    X_val, _, user_val, true_labels = val_tensors
+def _make_centroid(embs):
+    """Compute L2-normalized centroid from an array of embeddings."""
+    centroid = embs.mean(axis=0)
+    centroid = centroid / (np.linalg.norm(centroid) + 1e-8)
+    return centroid
 
+
+def _make_distance_stats(embs, centroid):
+    """Compute cosine-distance statistics for embeddings relative to a centroid."""
+    distances = 1.0 - embs @ centroid
+    distances = np.clip(distances, 0.0, 2.0)
+    return {
+        "mean": float(np.mean(distances)),
+        "std": float(np.std(distances)),
+        "p95": float(np.percentile(distances, 95)),
+        "p99": float(np.percentile(distances, 99)),
+        "count": int(len(distances)),
+    }, distances
+
+
+def compute_centroids(model, X_scaled, user_ids, device_categories, user_to_id):
     model.eval()
+    id_to_user = {v: k for k, v in user_to_id.items()}
+
+    X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(_device)
+
     with torch.no_grad():
-        nn_preds = model(X_val.to(_device), user_val.to(_device)).cpu().numpy().flatten()
+        embeddings = model(X_tensor).cpu().numpy()
 
-    ensemble_preds = np.array([ensemble_threat_score(nn, 0) for nn in nn_preds])
+    centroids = {}
+    distance_stats = {}
+    all_distances = []
 
-    # First, calibrate predictions
-    calibrator = PlattCalibrator()
-    calibrator.fit(ensemble_preds, true_labels)
+    # --- Level 1: Per-(user, device_category) centroids ---
+    device_centroid_count = 0
+    for uid in np.unique(user_ids):
+        username = id_to_user[uid]
+        user_mask = user_ids == uid
 
-    # Save calibrator to disk
-    calibrator.save(CALIBRATOR_PATH)
+        # Find device categories for this user (exclude None/NaN)
+        user_device_cats = device_categories[user_mask]
+        for cat in np.unique(user_device_cats):
+            if cat is None or (isinstance(cat, float) and np.isnan(cat)) or str(cat) == "nan":
+                continue
+            cat_str = str(cat)
+            device_mask = user_mask & np.array([
+                str(d) == cat_str if d is not None and not (isinstance(d, float) and np.isnan(d))
+                else False
+                for d in device_categories
+            ])
+            device_embs = embeddings[device_mask]
+            if len(device_embs) < MIN_DEVICE_EVENTS:
+                continue
 
-    calibrated_preds = calibrator.transform(ensemble_preds)
+            centroid = _make_centroid(device_embs)
+            key = (username, cat_str)
+            centroids[key] = centroid
+            stats, dists = _make_distance_stats(device_embs, centroid)
+            distance_stats[key] = stats
+            device_centroid_count += 1
 
-    # Evaluate thresholds in calibrated space
-    thresholds = np.linspace(EVAL_CFG["start"], EVAL_CFG["end"], EVAL_CFG["steps"])
-    f1_scores = []
+    # --- Level 2: Per-user centroids (all logins regardless of device) ---
+    user_centroid_count = 0
+    for uid in np.unique(user_ids):
+        mask = user_ids == uid
+        user_embs = embeddings[mask]
+        username = id_to_user[uid]
 
-    for t in thresholds:
-        preds_bin = (calibrated_preds >= t).astype(int)
-        f1_scores.append(f1_score(true_labels, preds_bin))
+        centroid = _make_centroid(user_embs)
+        centroids[username] = centroid
+        stats, dists = _make_distance_stats(user_embs, centroid)
+        distance_stats[username] = stats
+        all_distances.extend(dists.tolist())
+        user_centroid_count += 1
 
-    best_idx = int(np.argmax(f1_scores))
-    best_t = thresholds[best_idx]
+    # --- Level 3: Population centroid ---
+    user_only_centroids = [v for k, v in centroids.items() if isinstance(k, str) and k != "__population__"]
+    pop_centroid = _make_centroid(np.stack(user_only_centroids))
+    centroids["__population__"] = pop_centroid
 
-    mlflow.log_metric("best_threshold", best_t)
-    mlflow.log_metric("val_best_f1", f1_scores[best_idx])
+    global_threshold = float(np.percentile(all_distances, 99))
 
-    # Write threshold file
-    try:
-        out_path = os.path.join(cfg("preprocessing.output_dir"),
-                                cfg("preprocessing.artifacts.threshold"))
-        with open(out_path, "w") as f:
-            f.write(f"{best_t:.6f}\n")
-    except Exception as e:
-        logging.error(f"Failed to write threshold file: {e}")
+    all_dists_arr = np.array(all_distances)
+    distance_stats["__population__"] = {
+        "mean": float(np.mean(all_dists_arr)),
+        "std": float(np.std(all_dists_arr)),
+        "p95": float(np.percentile(all_dists_arr, 95)),
+        "p99": global_threshold,
+        "count": int(len(all_dists_arr)),
+    }
 
-    return best_t
+    print(f"Computed {device_centroid_count} device-level centroids, {user_centroid_count} user-level centroids.")
+    print(f"Global anomaly threshold (p99): {global_threshold:.6f}")
+    print(f"Mean distance: {np.mean(all_distances):.6f}, Std: {np.std(all_distances):.6f}")
 
+    mlflow.log_metric("global_anomaly_threshold", global_threshold)
+    mlflow.log_metric("num_user_centroids", user_centroid_count)
+    mlflow.log_metric("num_device_centroids", device_centroid_count)
+    mlflow.log_metric("mean_distance", float(np.mean(all_distances)))
 
-def evaluate_on_test(model, test_tensors, threshold):
-    """
-    Final evaluation on the test set.
-    """
-    X_test, _, user_test, true_labels = test_tensors
-
-    model.eval()
-    with torch.no_grad():
-        nn_preds = model(X_test.to(_device), user_test.to(_device)).cpu().numpy().flatten()
-
-    ensemble_preds = np.array([ensemble_threat_score(nn, 0) for nn in nn_preds])
-
-    # Apply the threshold found during validation
-    final_preds = (ensemble_preds >= threshold).astype(int)
-
-    # Calculate final metrics
-    test_f1 = f1_score(true_labels, final_preds)
-    test_precision = precision_score(true_labels, final_preds, zero_division=0)
-    test_recall = recall_score(true_labels, final_preds, zero_division=0)
-
-    print(f"\nTest evaluation results:")
-    print(f"F1 Score: {test_f1:.4f}")
-    print(f"Precision: {test_precision:.4f}")
-    print(f"Recall:    {test_recall:.4f}\n")
-
-    mlflow.log_metric("test_f1", test_f1)
-    mlflow.log_metric("test_precision", test_precision)
-    mlflow.log_metric("test_recall", test_recall)
+    return centroids, distance_stats, global_threshold
 
 
 def main():
@@ -337,26 +398,35 @@ def main():
     with ctx:
         df = load_training_data(LIMIT)
 
-        (train_tensors, val_tensors, test_tensors, scaler, num_users, user_to_id,
-         preprocessor) = preprocess_training_data(df)
+        X_scaled, user_ids, device_categories, scaler, user_to_id, preprocessor = preprocess_training_data(df)
 
-        model = train_neural_network(train_tensors, val_tensors, num_users, checkpoint_path=MODEL_PATH)
+        model = train_encoder(X_scaled, user_ids, checkpoint_path=MODEL_PATH)
+
+        # Compute centroids and distance stats
+        centroids, distance_stats, global_threshold = compute_centroids(model, X_scaled, user_ids, device_categories, user_to_id)
 
         # Save artifacts
         joblib.dump(scaler, SCALER_PATH)
         joblib.dump(user_to_id, USER_MAP_PATH)
         joblib.dump(preprocessor, PREPROCESSOR_PATH)
+        joblib.dump(centroids, CENTROIDS_PATH)
+        joblib.dump(distance_stats, DISTANCE_STATS_PATH)
 
-        best_threshold = find_best_threshold(model, val_tensors)
-        print(f"Best threshold (determined on Val): {best_threshold:.3f}")
+        # Write threshold file
+        try:
+            threshold_path = os.path.join(cfg("preprocessing.output_dir"),
+                                          cfg("preprocessing.artifacts.threshold"))
+            with open(threshold_path, "w") as f:
+                f.write(f"{global_threshold:.6f}\n")
+        except Exception as e:
+            logging.error(f"Failed to write threshold file: {e}")
 
-        evaluate_on_test(model, test_tensors, best_threshold)
+        print(f"Global anomaly threshold: {global_threshold:.6f}")
 
         # MLFlow model registration
         if ENABLE_MLFLOW:
             mlflow.log_artifacts(cfg("preprocessing.output_dir", "nn_data"), artifact_path="artifacts")
 
-            # Need this for the signature validation in MLFlow. It just gives MLFlow the shape of our data
             example_input = pd.DataFrame(
                 [np.zeros(len(FEATURE_COLUMNS))],
                 columns=FEATURE_COLUMNS

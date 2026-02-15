@@ -1,12 +1,13 @@
--- Use this if you are starting your data collection with metrics version v4
+-- Use this if you are starting your data collection with metrics version v1
 create table rba_login_event
 (
     login_id               bigserial,
     username               text                                   not null,
     device_uuid            uuid,
+    device_category        text,
     event_timestamp        timestamp with time zone default now() not null,
     metrics_version        integer,
-    nn_score               double precision,
+    anomaly_score          double precision,
     impossible_travel      boolean                  default false not null,
     human_verified         boolean                  default false not null,
     ip_address             inet,

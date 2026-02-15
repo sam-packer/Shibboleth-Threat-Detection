@@ -18,7 +18,7 @@ if not POSTGRES_CONNECTION_STRING:
 engine = create_engine(POSTGRES_CONNECTION_STRING, pool_pre_ping=True, future=True)
 
 ALLOWED_JSON_COLUMNS = {
-    "metrics_version", "nn_score", "human_verified", "focus_changes", "blur_events",
+    "metrics_version", "anomaly_score", "human_verified", "focus_changes", "blur_events",
     "click_count", "key_count", "avg_key_delay_ms", "pointer_distance_px",
     "pointer_event_count", "scroll_distance_px", "scroll_event_count",
     "dom_ready_ms", "time_to_first_key_ms", "time_to_first_click_ms",
@@ -26,7 +26,8 @@ ALLOWED_JSON_COLUMNS = {
     "resize_events", "tz_offset_min", "language", "platform",
     "device_memory_gb", "hardware_concurrency", "screen_width_px",
     "screen_height_px", "pixel_ratio", "color_depth", "touch_support",
-    "webauthn_supported", "city", "country", "asn"
+    "webauthn_supported", "city", "country", "asn",
+    "device_category"
 }
 
 
@@ -120,6 +121,7 @@ def insert_login_event_from_json(
         username: str,
         ip_address: str = None,
         device_uuid: str = None,
+        device_category: str = None,
         extra_fields: Optional[Dict[str, Any]] = None,
 ) -> Optional[int]:
     """Insert raw login event data and return login_id."""
@@ -136,14 +138,15 @@ def insert_login_event_from_json(
     base_fields = {
         "username": username,
         "device_uuid": device_uuid,
+        "device_category": device_category,
         "ip_address": ip_address,
         "event_timestamp": datetime.now(timezone.utc),
     }
 
     behavioral_data = {k: v for k, v in data.items() if k in ALLOWED_JSON_COLUMNS}
-    nn_scores = {k: v for k, v in (extra_fields or {}).items() if k in ALLOWED_JSON_COLUMNS}
+    score_fields = {k: v for k, v in (extra_fields or {}).items() if k in ALLOWED_JSON_COLUMNS}
 
-    params = {**base_fields, **behavioral_data, **nn_scores}
+    params = {**base_fields, **behavioral_data, **score_fields}
     params = {k: v for k, v in params.items() if v is not None}
 
     sanitized_params = {}
@@ -174,7 +177,7 @@ def insert_login_event_from_json(
 def insert_rba_scores(
         login_id: int,
         username: str,
-        nn_score: float,
+        anomaly_score: float,
         ip_risk_score: float,
         impossible_travel: float,
         final_score: Optional[float] = None,
@@ -184,18 +187,18 @@ def insert_rba_scores(
         logging.error("[DB] insert_rba_scores called with null login_id")
         return False
 
-    final_score = final_score if final_score is not None else nn_score
+    final_score = final_score if final_score is not None else anomaly_score
 
     sql = text("""
-               INSERT INTO rba_scores (login_id, username, nn_score, ip_risk_score, impossible_travel, final_score,
+               INSERT INTO rba_scores (login_id, username, anomaly_score, ip_risk_score, impossible_travel, final_score,
                                        created_at)
-               VALUES (:login_id, :username, :nn_score, :ip_risk_score, :impossible_travel, :final_score, :created_at)
+               VALUES (:login_id, :username, :anomaly_score, :ip_risk_score, :impossible_travel, :final_score, :created_at)
                """)
 
     params = {
         "login_id": login_id,
         "username": username,
-        "nn_score": nn_score.item() if hasattr(nn_score, 'item') else nn_score,
+        "anomaly_score": anomaly_score.item() if hasattr(anomaly_score, 'item') else anomaly_score,
         "ip_risk_score": ip_risk_score.item() if hasattr(ip_risk_score, 'item') else ip_risk_score,
         "impossible_travel": impossible_travel.item() if hasattr(impossible_travel, 'item') else impossible_travel,
         "final_score": final_score.item() if hasattr(final_score, 'item') else final_score,
@@ -216,7 +219,8 @@ def record_login_with_scores(
         username: str,
         ip_address: str,
         device_uuid: str,
-        nn_score: float,
+        device_category: str,
+        anomaly_score: float,
         ip_risk_score: float,
         impossible_travel: float,
         final_score: Optional[float] = None,
@@ -230,7 +234,8 @@ def record_login_with_scores(
         username=username,
         ip_address=ip_address,
         device_uuid=device_uuid,
-        extra_fields={"nn_score": nn_score}
+        device_category=device_category,
+        extra_fields={"anomaly_score": anomaly_score}
     )
     if not login_id:
         return None
@@ -238,7 +243,7 @@ def record_login_with_scores(
     insert_rba_scores(
         login_id=login_id,
         username=username,
-        nn_score=nn_score,
+        anomaly_score=anomaly_score,
         ip_risk_score=ip_risk_score,
         impossible_travel=impossible_travel,
         final_score=final_score
