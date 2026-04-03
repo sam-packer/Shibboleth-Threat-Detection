@@ -2,14 +2,14 @@ import logging
 import threading
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-from helpers.globals import cfg
-from helpers.mlflow_helper import MODEL_CACHE, MODEL_CACHE_LOCK, _async_refresh_wrapper, initialize_model_cache
-from helpers.device_classifier import classify_device
-from nn_scripts.ensembler import ensemble_threat_score
-from external_data.geoip_helper import enrich_with_geoip, ensure_geoip_up_to_date
-from nn_scripts.nn_helper import compute_anomaly_score, load_model_and_scaler, get_model_version
-from external_data.stopforumspam_helper import ip_in_toxic_list, ensure_sfs_up_to_date
-from db.db_helper import record_login_with_scores, db_health_check, init_db_schema
+from src.utils.config_loader import cfg
+from src.utils.mlflow import MODEL_CACHE, MODEL_CACHE_LOCK, _async_refresh_wrapper, initialize_model_cache
+from src.utils.device import classify_device
+from src.models.ensembler import ensemble_threat_score
+from src.external.geoip import enrich_with_geoip, ensure_geoip_up_to_date
+from src.models.nn_helper import compute_anomaly_score, load_model_and_scaler, get_model_version
+from src.external.stopforumspam import ip_in_toxic_list, ensure_sfs_up_to_date
+from src.db.postgres import record_login_with_scores, db_health_check, init_db_schema
 
 load_dotenv()
 

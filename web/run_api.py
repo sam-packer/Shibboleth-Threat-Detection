@@ -2,8 +2,8 @@ import os
 import platform
 import logging
 import subprocess
-from helpers.globals import cfg
-from web.app import app
+from src.utils.config_loader import cfg
+from src.api.api import app
 
 
 def main():

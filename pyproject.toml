@@ -32,11 +32,11 @@ build-backend = "hatchling.build"
 package = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["web", "nn_scripts", "db", "helpers", "external_data"]
+packages = ["src"]
 
 [project.scripts]
-api = "web.app:main"
-api-prod = "web.run_api:main"
-train = "nn_scripts.train_nn:main"
-explain = "nn_scripts.explain_nn:main"
-verify = "helpers.verify_config_usage:main"
+api = "src.api.api:main"
+api-prod = "src.api.main:main"
+train = "src.training.train:main"
+explain = "src.training.explain:main"
+verify = "src.utils.config_validator:main"
